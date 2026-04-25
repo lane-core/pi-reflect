@@ -1,4 +1,8 @@
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
+  <a href="https://github.com/jo-inc/pi-reflect/stargazers"><img src="https://img.shields.io/github/stars/jo-inc/pi-reflect" alt="GitHub stars" /></a>
+</p>
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="logo-dark.png" width="300">
     <img src="logo.png" alt="pi-reflect" width="300">
