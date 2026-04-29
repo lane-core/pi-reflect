@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	CONFIG_FILE,
 	computeFileMetrics,
+	FALLBACK_TARGET,
 	loadConfig,
 	loadHistory,
 	resolvePath,
@@ -46,15 +47,8 @@ export function registerReflectCommand(
 					(t) => resolvePath(t.path) === resolvePath(targetPath),
 				);
 				target = existing ?? {
-					...(loadConfig().unwrapOr({ targets: [] }).targets[0] ?? {
-						path: "",
-						schedule: "manual",
-						model: "",
-						lookbackDays: 1,
-						maxSessionBytes: 614400,
-						backupDir: "",
-						transcriptSource: { type: "pi-sessions" },
-					}),
+					...(loadConfig().unwrapOr({ targets: [] }).targets[0] ??
+						FALLBACK_TARGET),
 					path: targetPath,
 				};
 			} else {
@@ -66,15 +60,7 @@ export function registerReflectCommand(
 						);
 						if (!filePath) return;
 						target = {
-							...(config.targets[0] ?? {
-								path: "",
-								schedule: "manual",
-								model: "",
-								lookbackDays: 1,
-								maxSessionBytes: 614400,
-								backupDir: "",
-								transcriptSource: { type: "pi-sessions" },
-							}),
+							...(config.targets[0] ?? FALLBACK_TARGET),
 							path: filePath,
 						};
 

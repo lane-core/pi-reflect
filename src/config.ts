@@ -49,6 +49,14 @@ export const DEFAULT_TARGET: ReflectTarget = {
 	transcriptSource: { type: "pi-sessions" },
 };
 
+/** Fallback for ad-hoc reflect commands when no config exists. */
+export const FALLBACK_TARGET: ReflectTarget = {
+	...DEFAULT_TARGET,
+	schedule: "manual",
+	model: "",
+	maxSessionBytes: 614400,
+};
+
 export function loadConfig(): Result<ReflectConfig, ConfigError> {
 	return Result.fromThrowable(
 		() => {
@@ -70,11 +78,7 @@ export function saveConfig(config: ReflectConfig): Result<void, FileError> {
 		() => {
 			const dir = CONFIG_FILE.replace("/reflect.json", "");
 			fs.mkdirSync(dir, { recursive: true });
-			fs.writeFileSync(
-				CONFIG_FILE,
-				JSON.stringify(config, null, 2),
-				"utf-8",
-			);
+			fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
 		},
 		(e) => new FileError(`Failed to save config: ${e}`, CONFIG_FILE),
 	)();
@@ -93,11 +97,7 @@ export function saveHistory(runs: ReflectRun[]): Result<void, FileError> {
 	return Result.fromThrowable(
 		() => {
 			const trimmed = runs.slice(-MAX_HISTORY_ENTRIES);
-			fs.writeFileSync(
-				HISTORY_FILE,
-				JSON.stringify(trimmed, null, 2),
-				"utf-8",
-			);
+			fs.writeFileSync(HISTORY_FILE, JSON.stringify(trimmed, null, 2), "utf-8");
 		},
 		(e) => new FileError(`Failed to save history: ${e}`, HISTORY_FILE),
 	)();

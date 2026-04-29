@@ -23,6 +23,7 @@
   },
   "homepage": "https://github.com/jo-inc/pi-reflect#readme",
   "type": "module",
+  "engines": { "node": ">=18" },
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts"
   },
