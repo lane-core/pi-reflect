@@ -1,42 +1,50 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
 	buildTranscriptBatches,
-	runReflection,
+	DEFAULT_TARGET,
+	type NotifyFn,
 	type ReflectTarget,
 	type RunReflectionDeps,
-	type NotifyFn,
+	runReflection,
 	type SessionData,
-	type TranscriptResult,
-	DEFAULT_TARGET,
 } from "../extensions/reflect.js";
-import { makeTempDir, cleanup, SAMPLE_AGENTS_MD } from "./helpers.js";
+import { cleanup, makeTempDir, SAMPLE_AGENTS_MD } from "./helpers.js";
 
 // --- buildTranscriptBatches tests ---
 
-function makeSession(id: string, sizeBytes: number): SessionData {
+function makeSession(_id: string, sizeBytes: number): SessionData {
 	const transcript = "x".repeat(sizeBytes);
 	return {
 		transcript,
 		project: "test-project",
-		sessionId: id,
-		date: "2026-02-20",
 		size: sizeBytes,
+		userCount: 1,
+		exchangeCount: 3,
+		time: "2026-02-20 03:00:00",
 	};
 }
 
 describe("buildTranscriptBatches", () => {
 	it("puts all sessions in one batch when they fit", () => {
-		const sessions = [makeSession("a", 100), makeSession("b", 100), makeSession("c", 100)];
+		const sessions = [
+			makeSession("a", 100),
+			makeSession("b", 100),
+			makeSession("c", 100),
+		];
 		const batches = buildTranscriptBatches(sessions, 1000);
 		assert.equal(batches.length, 1);
 		assert.equal(batches[0].length, 3);
 	});
 
 	it("splits sessions across batches when they exceed maxBytes", () => {
-		const sessions = [makeSession("a", 500), makeSession("b", 500), makeSession("c", 500)];
+		const sessions = [
+			makeSession("a", 500),
+			makeSession("b", 500),
+			makeSession("c", 500),
+		];
 		// Each entry is transcript + "\n---\n\n" = 506 bytes
 		const batches = buildTranscriptBatches(sessions, 600);
 		assert.equal(batches.length, 3);
@@ -74,9 +82,18 @@ describe("buildTranscriptBatches", () => {
 
 	it("preserves session order across batches", () => {
 		const sessions = [
-			{ ...makeSession("1st", 300), transcript: "FIRST_SESSION_CONTENT" + "x".repeat(279) },
-			{ ...makeSession("2nd", 300), transcript: "SECOND_SESSION_CONTENT" + "x".repeat(278) },
-			{ ...makeSession("3rd", 300), transcript: "THIRD_SESSION_CONTENT" + "x".repeat(279) },
+			{
+				...makeSession("1st", 300),
+				transcript: "FIRST_SESSION_CONTENT" + "x".repeat(279),
+			},
+			{
+				...makeSession("2nd", 300),
+				transcript: "SECOND_SESSION_CONTENT" + "x".repeat(278),
+			},
+			{
+				...makeSession("3rd", 300),
+				transcript: "THIRD_SESSION_CONTENT" + "x".repeat(279),
+			},
 		];
 		const batches = buildTranscriptBatches(sessions, 400);
 		assert.equal(batches.length, 3);
@@ -125,11 +142,13 @@ function makeModelRegistry() {
 
 function makeToolCallResponse(analysis: any) {
 	return {
-		content: [{
-			type: "toolCall",
-			name: "submit_analysis",
-			arguments: analysis,
-		}],
+		content: [
+			{
+				type: "toolCall",
+				name: "submit_analysis",
+				arguments: analysis,
+			},
+		],
 	};
 }
 
@@ -149,29 +168,8 @@ const LARGE_SESSION_SIZE = 40_000; // 40KB each — 3 sessions = 120KB > 100KB b
 
 function makeLargeSessions(count: number): SessionData[] {
 	return Array.from({ length: count }, (_, i) =>
-		makeSession(`s${i + 1}`, LARGE_SESSION_SIZE)
+		makeSession(`s${i + 1}`, LARGE_SESSION_SIZE),
 	);
-}
-
-function makeBatchDeps(
-	responsePerCall: any[],
-	sessions: SessionData[],
-): RunReflectionDeps {
-	let callIndex = 0;
-	return {
-		completeSimple: async () => {
-			const resp = responsePerCall[Math.min(callIndex, responsePerCall.length - 1)];
-			callIndex++;
-			return resp;
-		},
-		getModel: () => ({ provider: "test", id: "test-model" }),
-		collectTranscriptsFn: async () => ({
-			transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
-			sessionCount: sessions.length,
-			includedCount: sessions.length,
-			sessions,
-		}),
-	};
 }
 
 describe("analyzeTranscriptBatch — tool call parsing", () => {
@@ -181,18 +179,22 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 		const target = makeTarget({ path: fp });
 
 		const deps: RunReflectionDeps = {
-			completeSimple: async () => makeToolCallResponse({
-				corrections_found: 1,
-				sessions_with_corrections: 1,
-				edits: [{
-					type: "strengthen",
-					section: "Rules",
-					old_text: "- **Keep code DRY**: NEVER duplicate logic.",
-					new_text: "- **Keep code DRY**: NEVER duplicate logic. Always use shared helpers.",
-					reason: "Agent duplicated code in 2 sessions",
-				}],
-				summary: "Added DRY emphasis.",
-			}),
+			completeSimple: async () =>
+				makeToolCallResponse({
+					corrections_found: 1,
+					sessions_with_corrections: 1,
+					edits: [
+						{
+							type: "strengthen",
+							section: "Rules",
+							old_text: "- **Keep code DRY**: NEVER duplicate logic.",
+							new_text:
+								"- **Keep code DRY**: NEVER duplicate logic. Always use shared helpers.",
+							reason: "Agent duplicated code in 2 sessions",
+						},
+					],
+					summary: "Added DRY emphasis.",
+				}),
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
 				transcripts: "### Session\n\n**USER:** test\n",
@@ -201,7 +203,12 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 		assert.notEqual(result, null);
 		assert.equal(result!.editsApplied, 1);
 		const updated = fs.readFileSync(fp, "utf-8");
@@ -216,13 +223,16 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 		const jsonResponse = JSON.stringify({
 			corrections_found: 1,
 			sessions_with_corrections: 1,
-			edits: [{
-				type: "strengthen",
-				section: "Rules",
-				old_text: "- **Keep code DRY**: NEVER duplicate logic.",
-				new_text: "- **Keep code DRY**: NEVER duplicate logic. Use parameterized functions.",
-				reason: "test",
-			}],
+			edits: [
+				{
+					type: "strengthen",
+					section: "Rules",
+					old_text: "- **Keep code DRY**: NEVER duplicate logic.",
+					new_text:
+						"- **Keep code DRY**: NEVER duplicate logic. Use parameterized functions.",
+					reason: "test",
+				},
+			],
 			summary: "Fallback test.",
 		});
 
@@ -236,7 +246,12 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 		assert.notEqual(result, null);
 		assert.equal(result!.editsApplied, 1);
 	});
@@ -260,9 +275,18 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("Rate limit")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "error" && n.msg.includes("Rate limit"),
+			),
+		);
 	});
 });
 
@@ -287,13 +311,15 @@ describe("batched runReflection", () => {
 					return makeToolCallResponse({
 						corrections_found: 1,
 						sessions_with_corrections: 1,
-						edits: [{
-							type: "add",
-							after_text: "- **Keep code DRY**: NEVER duplicate logic.",
-							new_text: "- **Batch 1 rule**: From first batch.",
-							reason: "batch 1",
-							section: "Rules",
-						}],
+						edits: [
+							{
+								type: "add",
+								after_text: "- **Keep code DRY**: NEVER duplicate logic.",
+								new_text: "- **Batch 1 rule**: From first batch.",
+								reason: "batch 1",
+								section: "Rules",
+							},
+						],
 						summary: "Batch 1 done.",
 					});
 				}
@@ -301,31 +327,38 @@ describe("batched runReflection", () => {
 				return makeToolCallResponse({
 					corrections_found: 1,
 					sessions_with_corrections: 1,
-					edits: [{
-						type: "add",
-						after_text: "- **Batch 1 rule**: From first batch.",
-						new_text: `- **Batch ${callCount} rule**: From batch ${callCount}.`,
-						reason: `batch ${callCount}`,
-						section: "Rules",
-					}],
+					edits: [
+						{
+							type: "add",
+							after_text: "- **Batch 1 rule**: From first batch.",
+							new_text: `- **Batch ${callCount} rule**: From batch ${callCount}.`,
+							reason: `batch ${callCount}`,
+							section: "Rules",
+						},
+					],
 					summary: `Batch ${callCount} done.`,
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
-				transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
+				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
 				sessions,
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 
 		assert.notEqual(result, null);
 		assert.ok(callCount >= 2, `Expected multiple LLM calls, got ${callCount}`);
-		assert.ok(notifications.some(n => n.msg.includes("splitting into")));
-		assert.ok(notifications.some(n => n.msg.includes("Batch 1")));
+		assert.ok(notifications.some((n) => n.msg.includes("splitting into")));
+		assert.ok(notifications.some((n) => n.msg.includes("Batch 1")));
 
 		const updated = fs.readFileSync(fp, "utf-8");
 		assert.ok(updated.includes("Batch 1 rule"));
@@ -350,32 +383,36 @@ describe("batched runReflection", () => {
 					return makeToolCallResponse({
 						corrections_found: 1,
 						sessions_with_corrections: 1,
-						edits: [{
-							type: "add",
-							after_text: "- **Keep code DRY**: NEVER duplicate logic.",
-							new_text: "- **Rule from batch 1**: Added.",
-							reason: "test",
-							section: "Rules",
-						}],
+						edits: [
+							{
+								type: "add",
+								after_text: "- **Keep code DRY**: NEVER duplicate logic.",
+								new_text: "- **Rule from batch 1**: Added.",
+								reason: "test",
+								section: "Rules",
+							},
+						],
 						summary: "Batch 1.",
 					});
 				}
 				return makeToolCallResponse({
 					corrections_found: 1,
 					sessions_with_corrections: 1,
-					edits: [{
-						type: "add",
-						after_text: "- **Rule from batch 1**: Added.",
-						new_text: `- **Rule from batch ${callCount}**: Also added.`,
-						reason: "test",
-						section: "Rules",
-					}],
+					edits: [
+						{
+							type: "add",
+							after_text: "- **Rule from batch 1**: Added.",
+							new_text: `- **Rule from batch ${callCount}**: Also added.`,
+							reason: "test",
+							section: "Rules",
+						},
+					],
 					summary: `Batch ${callCount}.`,
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
-				transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
+				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
 				sessions,
@@ -389,7 +426,10 @@ describe("batched runReflection", () => {
 		assert.equal(backups.length, 1);
 
 		// Backup should have original content (before any batch edits)
-		const backupContent = fs.readFileSync(path.join(backupDir, backups[0]), "utf-8");
+		const backupContent = fs.readFileSync(
+			path.join(backupDir, backups[0]),
+			"utf-8",
+		);
 		assert.equal(backupContent, SAMPLE_AGENTS_MD);
 	});
 
@@ -413,13 +453,15 @@ describe("batched runReflection", () => {
 					return makeToolCallResponse({
 						corrections_found: 1,
 						sessions_with_corrections: 1,
-						edits: [{
-							type: "add",
-							after_text: "- **Keep code DRY**: NEVER duplicate logic.",
-							new_text: "- **Intermediate rule**: Inserted by batch 1.",
-							reason: "test",
-							section: "Rules",
-						}],
+						edits: [
+							{
+								type: "add",
+								after_text: "- **Keep code DRY**: NEVER duplicate logic.",
+								new_text: "- **Intermediate rule**: Inserted by batch 1.",
+								reason: "test",
+								section: "Rules",
+							},
+						],
 						summary: "Batch 1.",
 					});
 				}
@@ -437,7 +479,7 @@ describe("batched runReflection", () => {
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
-				transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
+				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
 				sessions,
@@ -446,7 +488,10 @@ describe("batched runReflection", () => {
 
 		await runReflection(target, makeModelRegistry(), notify, deps);
 		assert.ok(callIndex >= 2, "Should have multiple batch calls");
-		assert.ok(laterBatchSawEdit, "Later batch should see batch 1's edits on disk");
+		assert.ok(
+			laterBatchSawEdit,
+			"Later batch should see batch 1's edits on disk",
+		);
 	});
 
 	it("combines summaries from multiple batches", async () => {
@@ -471,14 +516,19 @@ describe("batched runReflection", () => {
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
-				transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
+				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
 				sessions,
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 
 		assert.notEqual(result, null);
 		assert.ok(callCount >= 2, `Expected multiple LLM calls, got ${callCount}`);
@@ -508,31 +558,33 @@ describe("batched runReflection", () => {
 				return makeToolCallResponse({
 					corrections_found: 1,
 					sessions_with_corrections: 1,
-					edits: [{
-						type: "add",
-						after_text: "- **Keep code DRY**: NEVER duplicate logic.",
-						new_text: "- **Surviving rule**: From later batch.",
-						reason: "test",
-						section: "Rules",
-					}],
+					edits: [
+						{
+							type: "add",
+							after_text: "- **Keep code DRY**: NEVER duplicate logic.",
+							new_text: "- **Surviving rule**: From later batch.",
+							reason: "test",
+							section: "Rules",
+						},
+					],
 					summary: "Later batch succeeded.",
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
-				transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
+				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
 				sessions,
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		await runReflection(target, makeModelRegistry(), notify, deps);
 		assert.ok(callIndex >= 2, "Should have made multiple LLM calls");
 		// Later batch's edit should still apply even though batch 1 failed
 		const updated = fs.readFileSync(fp, "utf-8");
 		assert.ok(updated.includes("Surviving rule"));
-		assert.ok(notifications.some(n => n.msg.includes("Timeout")));
+		assert.ok(notifications.some((n) => n.msg.includes("Timeout")));
 	});
 
 	it("does not batch when sessions fit within budget", async () => {
@@ -545,12 +597,13 @@ describe("batched runReflection", () => {
 
 		const sessions = [makeSession("s1", 100), makeSession("s2", 100)];
 		const deps: RunReflectionDeps = {
-			completeSimple: async () => makeToolCallResponse({
-				corrections_found: 0,
-				sessions_with_corrections: 0,
-				edits: [],
-				summary: "All clean.",
-			}),
+			completeSimple: async () =>
+				makeToolCallResponse({
+					corrections_found: 0,
+					sessions_with_corrections: 0,
+					edits: [],
+					summary: "All clean.",
+				}),
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
 				transcripts: "### Session\n\n**USER:** test\n",
@@ -560,11 +613,16 @@ describe("batched runReflection", () => {
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 		assert.notEqual(result, null);
 		// Should NOT see batching notification
-		assert.ok(!notifications.some(n => n.msg.includes("splitting into")));
-		assert.ok(notifications.some(n => n.msg.includes("Analyzing with")));
+		assert.ok(!notifications.some((n) => n.msg.includes("splitting into")));
+		assert.ok(notifications.some((n) => n.msg.includes("Analyzing with")));
 	});
 
 	it("accumulates correctionsFound across batches", async () => {
@@ -591,18 +649,25 @@ describe("batched runReflection", () => {
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
 			collectTranscriptsFn: async () => ({
-				transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
+				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
 				sessions,
 			}),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 
 		assert.notEqual(result, null);
 		// Sum all corrections across however many batches were created
-		const expectedTotal = correctionsPerBatch.slice(0, callCount).reduce((a, b) => a + b, 0);
+		const expectedTotal = correctionsPerBatch
+			.slice(0, callCount)
+			.reduce((a, b) => a + b, 0);
 		assert.equal(result!.correctionsFound, expectedTotal);
 	});
 
@@ -617,26 +682,33 @@ describe("batched runReflection", () => {
 		const sessions = makeLargeSessions(3);
 
 		const deps: RunReflectionDeps = {
-			completeSimple: async () => makeToolCallResponse({
-				corrections_found: 0,
-				sessions_with_corrections: 0,
-				edits: [],
-				summary: "Clean.",
-			}),
+			completeSimple: async () =>
+				makeToolCallResponse({
+					corrections_found: 0,
+					sessions_with_corrections: 0,
+					edits: [],
+					summary: "Clean.",
+				}),
 			getModel: () => ({ provider: "test", id: "test-model" }),
 		};
 
-		const result = await runReflection(target, makeModelRegistry(), notify, deps, {
-			transcriptsOverride: {
-				transcripts: sessions.map(s => s.transcript).join("\n---\n\n"),
-				sessionCount: 2,
-				includedCount: 2,
-				sessions,
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+			{
+				transcriptsOverride: {
+					transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
+					sessionCount: 2,
+					includedCount: 2,
+					sessions,
+				},
 			},
-		});
+		);
 
 		assert.notEqual(result, null);
 		// Should batch since totalBytes (800) > batchBudget with tiny maxSessionBytes
-		assert.ok(notifications.some(n => n.msg.includes("splitting into")));
+		assert.ok(notifications.some((n) => n.msg.includes("splitting into")));
 	});
 });

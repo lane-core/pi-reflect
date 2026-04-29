@@ -11,6 +11,8 @@
 
 # pi-reflect
 
+> ⚠️ **WIP: This fork is actively being refactored.** The codebase is being restructured from a flat two-file extension into a modular, layered architecture. See [`docs/refactor.md`](docs/refactor.md) for the planned direction and `HANDOFF.md` for the current state. The `v1.x` API surface is preserved for backward compatibility during the transition.
+
 Iterative self-improvement for [pi](https://github.com/badlogic/pi-mono) coding agents.
 
 Define a target — how your agent should behave, what it should remember, who it should be — and reflect iterates toward it. Each run reads recent conversations and reference material, compares the agent's actual behavior against the target, and makes surgical edits to close the gap.
@@ -55,29 +57,46 @@ Over time, the file converges: corrections get absorbed as rules, memory accumul
 
 Each target has two input channels — `transcripts` (what happened) and `context` (reference material). Both accept an array of sources:
 
-| Type | Description | Example |
-|------|-------------|---------|
-| `files` | Glob patterns or file paths, pruned by date and size | Daily logs, notes, other markdown files |
-| `command` | Shell command, stdout captured | API calls, database queries, custom scripts |
-| `url` | HTTP GET, response body captured | REST endpoints, health checks |
+| Type      | Description                                          | Example                                     |
+| --------- | ---------------------------------------------------- | ------------------------------------------- |
+| `files`   | Glob patterns or file paths, pruned by date and size | Daily logs, notes, other markdown files     |
+| `command` | Shell command, stdout captured                       | API calls, database queries, custom scripts |
+| `url`     | HTTP GET, response body captured                     | REST endpoints, health checks               |
 
 All sources support `{lookbackDays}` interpolation and per-source `maxBytes` caps. File sources are automatically pruned to only include files within the `lookbackDays` window (matched by date in filename).
 
 ```json
 {
-  "targets": [{
-    "path": "/data/me/MEMORY.md",
-    "model": "anthropic/claude-sonnet-4-5",
-    "lookbackDays": 1,
-    "transcripts": [
-      { "type": "command", "label": "conversations", "command": "curl -s http://localhost:3001/conversation/recent?days={lookbackDays}", "maxBytes": 400000 }
-    ],
-    "context": [
-      { "type": "files", "label": "daily logs", "paths": ["/data/me/daily/*.md"], "maxBytes": 50000 },
-      { "type": "files", "label": "notes", "paths": ["/data/me/notes/*.md"], "maxBytes": 50000 }
-    ],
-    "prompt": "..."
-  }]
+  "targets": [
+    {
+      "path": "/data/me/MEMORY.md",
+      "model": "anthropic/claude-sonnet-4-5",
+      "lookbackDays": 1,
+      "transcripts": [
+        {
+          "type": "command",
+          "label": "conversations",
+          "command": "curl -s http://localhost:3001/conversation/recent?days={lookbackDays}",
+          "maxBytes": 400000
+        }
+      ],
+      "context": [
+        {
+          "type": "files",
+          "label": "daily logs",
+          "paths": ["/data/me/daily/*.md"],
+          "maxBytes": 50000
+        },
+        {
+          "type": "files",
+          "label": "notes",
+          "paths": ["/data/me/notes/*.md"],
+          "maxBytes": 50000
+        }
+      ],
+      "prompt": "..."
+    }
+  ]
 }
 ```
 
@@ -89,13 +108,13 @@ For the common case of local pi sessions, just use `transcriptSource`:
 
 ## Prompts define the target
 
-Each target has an optional `prompt` field that tells reflect *what to optimize for*. The same engine drives very different behaviors depending on the prompt:
+Each target has an optional `prompt` field that tells reflect _what to optimize for_. The same engine drives very different behaviors depending on the prompt:
 
-| Target | Prompt goal | What reflect does |
-|--------|------------|-------------------|
-| `AGENTS.md` | Behavioral correctness | Strengthens violated rules, adds rules for recurring patterns |
-| `MEMORY.md` | Factual completeness | Extracts durable facts from conversations, removes stale entries |
-| `SOUL.md` | Identity convergence | Sharpens personality from generic to specific based on interaction patterns |
+| Target      | Prompt goal            | What reflect does                                                           |
+| ----------- | ---------------------- | --------------------------------------------------------------------------- |
+| `AGENTS.md` | Behavioral correctness | Strengthens violated rules, adds rules for recurring patterns               |
+| `MEMORY.md` | Factual completeness   | Extracts durable facts from conversations, removes stale entries            |
+| `SOUL.md`   | Identity convergence   | Sharpens personality from generic to specific based on interaction patterns |
 
 Prompts use `{fileName}`, `{targetContent}`, `{transcripts}`, and `{context}` as placeholders:
 
@@ -123,28 +142,30 @@ If no prompt is set, the default targets behavioral corrections (the original us
 
 ```json
 {
-  "targets": [{
-    "path": "/path/to/AGENTS.md",
-    "model": "anthropic/claude-sonnet-4-5",
-    "lookbackDays": 1,
-    "maxSessionBytes": 614400,
-    "backupDir": "~/.pi/agent/reflect-backups",
-    "transcriptSource": { "type": "pi-sessions" }
-  }]
+  "targets": [
+    {
+      "path": "/path/to/AGENTS.md",
+      "model": "anthropic/claude-sonnet-4-5",
+      "lookbackDays": 1,
+      "maxSessionBytes": 614400,
+      "backupDir": "~/.pi/agent/reflect-backups",
+      "transcriptSource": { "type": "pi-sessions" }
+    }
+  ]
 }
 ```
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `path` | *(required)* | Target markdown file to iterate on |
-| `model` | *(required)* | LLM to use (e.g. `anthropic/claude-sonnet-4-5`) |
-| `lookbackDays` | `1` | How far back to look for evidence |
-| `maxSessionBytes` | `614400` | Max transcript bytes per run |
-| `transcripts` | — | Array of `ContextSource` for transcript data |
-| `transcriptSource` | `pi-sessions` | Legacy single source (use `transcripts` for multiple) |
-| `context` | — | Array of `ContextSource` for reference material |
-| `prompt` | *(default)* | Custom prompt with `{fileName}`, `{targetContent}`, `{transcripts}`, `{context}` |
-| `backupDir` | `~/.pi/agent/reflect-backups` | Where to store pre-edit backups |
+| Field              | Default                       | Description                                                                      |
+| ------------------ | ----------------------------- | -------------------------------------------------------------------------------- |
+| `path`             | _(required)_                  | Target markdown file to iterate on                                               |
+| `model`            | _(required)_                  | LLM to use (e.g. `anthropic/claude-sonnet-4-5`)                                  |
+| `lookbackDays`     | `1`                           | How far back to look for evidence                                                |
+| `maxSessionBytes`  | `614400`                      | Max transcript bytes per run                                                     |
+| `transcripts`      | —                             | Array of `ContextSource` for transcript data                                     |
+| `transcriptSource` | `pi-sessions`                 | Legacy single source (use `transcripts` for multiple)                            |
+| `context`          | —                             | Array of `ContextSource` for reference material                                  |
+| `prompt`           | _(default)_                   | Custom prompt with `{fileName}`, `{targetContent}`, `{transcripts}`, `{context}` |
+| `backupDir`        | `~/.pi/agent/reflect-backups` | Where to store pre-edit backups                                                  |
 
 ## Related
 
@@ -172,10 +193,10 @@ MIT
 
 ## Pi Ecosystem
 
-| Package | Description |
-|---------|-------------|
-| [pi-mem](https://github.com/jo-inc/pi-mem) | Persistent markdown memory for coding agents |
-| [pi-boss](https://github.com/skyfallsin/pi-boss) | Multi-agent orchestration via tmux |
-| [pi-room](https://github.com/skyfallsin/pi-room) | Multi-agent awareness and coordination |
-| [pi-vertex-anthropic](https://github.com/skyfallsin/pi-vertex-anthropic) | Claude via Google Cloud Vertex AI |
-| [pi-skill-posthog](https://github.com/skyfallsin/pi-skill-posthog) | PostHog analytics skill for pi agents |
+| Package                                                                  | Description                                  |
+| ------------------------------------------------------------------------ | -------------------------------------------- |
+| [pi-mem](https://github.com/jo-inc/pi-mem)                               | Persistent markdown memory for coding agents |
+| [pi-boss](https://github.com/skyfallsin/pi-boss)                         | Multi-agent orchestration via tmux           |
+| [pi-room](https://github.com/skyfallsin/pi-room)                         | Multi-agent awareness and coordination       |
+| [pi-vertex-anthropic](https://github.com/skyfallsin/pi-vertex-anthropic) | Claude via Google Cloud Vertex AI            |
+| [pi-skill-posthog](https://github.com/skyfallsin/pi-skill-posthog)       | PostHog analytics skill for pi agents        |

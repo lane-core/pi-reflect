@@ -1,15 +1,15 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
-	runReflection,
+	DEFAULT_TARGET,
+	type NotifyFn,
 	type ReflectTarget,
 	type RunReflectionDeps,
-	type NotifyFn,
-	DEFAULT_TARGET,
+	runReflection,
 } from "../extensions/reflect.js";
-import { makeTempDir, cleanup, SAMPLE_AGENTS_MD } from "./helpers.js";
+import { cleanup, makeTempDir, SAMPLE_AGENTS_MD } from "./helpers.js";
 
 let tmpDir: string;
 let notifications: Array<{ msg: string; level: string }>;
@@ -33,11 +33,24 @@ function makeTarget(overrides: Partial<ReflectTarget> = {}): ReflectTarget {
 	};
 }
 
-function makeLlmResponse(edits: any[], corrections_found = 5, summary = "Test summary") {
-	return JSON.stringify({ corrections_found, sessions_with_corrections: 3, edits, patterns_not_added: [], summary });
+function makeLlmResponse(
+	edits: any[],
+	corrections_found = 5,
+	summary = "Test summary",
+) {
+	return JSON.stringify({
+		corrections_found,
+		sessions_with_corrections: 3,
+		edits,
+		patterns_not_added: [],
+		summary,
+	});
 }
 
-function makeDeps(llmResponseJson: string, transcripts = "### Session: test\n\n**USER:** bro no\n**AGENT:** sorry"): RunReflectionDeps {
+function makeDeps(
+	llmResponseJson: string,
+	transcripts = "### Session: test\n\n**USER:** bro no\n**AGENT:** sorry",
+): RunReflectionDeps {
 	return {
 		completeSimple: async () => ({
 			content: [{ type: "text", text: llmResponseJson }],
@@ -61,18 +74,36 @@ function makeModelRegistry() {
 describe("runReflection", () => {
 	it("returns null and notifies when target file not found", async () => {
 		const target = makeTarget({ path: path.join(tmpDir, "nonexistent.md") });
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps("{}"));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps("{}"),
+		);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("not found")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "error" && n.msg.includes("not found"),
+			),
+		);
 	});
 
 	it("returns null when target file is too small", async () => {
 		const fp = path.join(tmpDir, "tiny.md");
 		fs.writeFileSync(fp, "small");
 		const target = makeTarget({ path: fp });
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps("{}"));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps("{}"),
+		);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("too small")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "error" && n.msg.includes("too small"),
+			),
+		);
 	});
 
 	it("returns null when no transcripts found", async () => {
@@ -81,11 +112,22 @@ describe("runReflection", () => {
 		const target = makeTarget({ path: fp });
 		const deps: RunReflectionDeps = {
 			...makeDeps("{}"),
-			collectTranscriptsFn: async () => ({ transcripts: "", sessionCount: 5, includedCount: 0 }),
+			collectTranscriptsFn: async () => ({
+				transcripts: "",
+				sessionCount: 5,
+				includedCount: 0,
+			}),
 		};
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.msg.includes("No substantive sessions")));
+		assert.ok(
+			notifications.some((n) => n.msg.includes("No substantive sessions")),
+		);
 	});
 
 	it("returns null when model not found", async () => {
@@ -99,7 +141,11 @@ describe("runReflection", () => {
 		const registry = { find: () => null, getApiKey: async () => null };
 		const result = await runReflection(target, registry, notify, deps);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("Model not found")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "error" && n.msg.includes("Model not found"),
+			),
+		);
 	});
 
 	it("returns null when no API key available", async () => {
@@ -110,9 +156,18 @@ describe("runReflection", () => {
 			find: () => ({ provider: "test", id: "test" }),
 			getApiKey: async () => null,
 		};
-		const result = await runReflection(target, registry, notify, makeDeps("{}"));
+		const result = await runReflection(
+			target,
+			registry,
+			notify,
+			makeDeps("{}"),
+		);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("No API key")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "error" && n.msg.includes("No API key"),
+			),
+		);
 	});
 
 	it("returns run with 0 edits when LLM says no edits needed", async () => {
@@ -120,7 +175,12 @@ describe("runReflection", () => {
 		fs.writeFileSync(fp, SAMPLE_AGENTS_MD);
 		const target = makeTarget({ path: fp });
 		const llmResponse = makeLlmResponse([], 0, "No issues found.");
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps(llmResponse));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps(llmResponse),
+		);
 		assert.notEqual(result, null);
 		assert.equal(result!.editsApplied, 0);
 		assert.equal(result!.correctionsFound, 0);
@@ -133,13 +193,21 @@ describe("runReflection", () => {
 		const backupDir = path.join(tmpDir, "backups");
 		const target = makeTarget({ path: fp, backupDir });
 
-		const llmResponse = makeLlmResponse([{
-			type: "strengthen",
-			old_text: "- **Keep code DRY**: NEVER duplicate logic.",
-			new_text: "- **Keep code DRY (CRITICAL)**: NEVER duplicate logic. If two call sites need different behavior, add parameters.",
-		}]);
+		const llmResponse = makeLlmResponse([
+			{
+				type: "strengthen",
+				old_text: "- **Keep code DRY**: NEVER duplicate logic.",
+				new_text:
+					"- **Keep code DRY (CRITICAL)**: NEVER duplicate logic. If two call sites need different behavior, add parameters.",
+			},
+		]);
 
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps(llmResponse));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps(llmResponse),
+		);
 		assert.notEqual(result, null);
 		assert.equal(result!.editsApplied, 1);
 
@@ -154,7 +222,10 @@ describe("runReflection", () => {
 		assert.ok(backups[0].endsWith(".md"));
 
 		// Backup has original content
-		const backupContent = fs.readFileSync(path.join(backupDir, backups[0]), "utf-8");
+		const backupContent = fs.readFileSync(
+			path.join(backupDir, backups[0]),
+			"utf-8",
+		);
 		assert.equal(backupContent, SAMPLE_AGENTS_MD);
 	});
 
@@ -164,15 +235,26 @@ describe("runReflection", () => {
 		const backupDir = path.join(tmpDir, "backups");
 		const target = makeTarget({ path: fp, backupDir });
 
-		const llmResponse = makeLlmResponse([{
-			type: "strengthen",
-			old_text: "- This text does not exist in the file at all.",
-			new_text: "- Replacement that can never apply.",
-		}]);
+		const llmResponse = makeLlmResponse([
+			{
+				type: "strengthen",
+				old_text: "- This text does not exist in the file at all.",
+				new_text: "- Replacement that can never apply.",
+			},
+		]);
 
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps(llmResponse));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps(llmResponse),
+		);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "warning" && n.msg.includes("edits failed")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "warning" && n.msg.includes("edits failed"),
+			),
+		);
 
 		// Backup should be cleaned up
 		if (fs.existsSync(backupDir)) {
@@ -188,30 +270,49 @@ describe("runReflection", () => {
 		const deps: RunReflectionDeps = {
 			...makeDeps("{}"),
 			completeSimple: async () => ({
-				content: [{ type: "text", text: "This is not JSON at all, just plain text." }],
+				content: [
+					{ type: "text", text: "This is not JSON at all, just plain text." },
+				],
 			}),
 		};
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("Failed to parse")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "error" && n.msg.includes("Failed to parse"),
+			),
+		);
 	});
 
 	it("strips markdown code fences from LLM response", async () => {
 		const fp = path.join(tmpDir, "AGENTS.md");
 		fs.writeFileSync(fp, SAMPLE_AGENTS_MD);
 		const target = makeTarget({ path: fp });
-		const jsonStr = makeLlmResponse([{
-			type: "strengthen",
-			old_text: "- **Keep code DRY**: NEVER duplicate logic.",
-			new_text: "- **Keep code DRY (CRITICAL)**: NEVER duplicate logic. Always parameterize.",
-		}]);
+		const jsonStr = makeLlmResponse([
+			{
+				type: "strengthen",
+				old_text: "- **Keep code DRY**: NEVER duplicate logic.",
+				new_text:
+					"- **Keep code DRY (CRITICAL)**: NEVER duplicate logic. Always parameterize.",
+			},
+		]);
 		const deps: RunReflectionDeps = {
 			...makeDeps("{}"),
 			completeSimple: async () => ({
 				content: [{ type: "text", text: "```json\n" + jsonStr + "\n```" }],
 			}),
 		};
-		const result = await runReflection(target, makeModelRegistry(), notify, deps);
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			deps,
+		);
 		assert.notEqual(result, null);
 		assert.equal(result!.editsApplied, 1);
 	});
@@ -221,7 +322,10 @@ describe("runReflection", () => {
 		fs.writeFileSync(fp, SAMPLE_AGENTS_MD);
 		const target = makeTarget({
 			path: fp,
-			transcriptSource: { type: "command", command: "echo test {lookbackDays}" },
+			transcriptSource: {
+				type: "command",
+				command: "echo test {lookbackDays}",
+			},
 		});
 
 		let commandCalledWith = "";
@@ -229,7 +333,11 @@ describe("runReflection", () => {
 			...makeDeps("{}"),
 			collectTranscriptsFromCommandFn: async (cmd, days, max) => {
 				commandCalledWith = cmd;
-				return { transcripts: "### Session: cmd test\n\n**USER:** test\n", sessionCount: 1, includedCount: 1 };
+				return {
+					transcripts: "### Session: cmd test\n\n**USER:** test\n",
+					sessionCount: 1,
+					includedCount: 1,
+				};
 			},
 		};
 
@@ -246,13 +354,21 @@ describe("runReflection", () => {
 		const fp = path.join(tmpDir, "AGENTS.md");
 		fs.writeFileSync(fp, SAMPLE_AGENTS_MD);
 		const target = makeTarget({ path: fp });
-		const llmResponse = makeLlmResponse([{
-			type: "add",
-			after_text: "- **Keep code DRY**: NEVER duplicate logic.",
-			new_text: "- **New rule 1**: First new rule.\n- **New rule 2**: Second new rule.",
-		}]);
+		const llmResponse = makeLlmResponse([
+			{
+				type: "add",
+				after_text: "- **Keep code DRY**: NEVER duplicate logic.",
+				new_text:
+					"- **New rule 1**: First new rule.\n- **New rule 2**: Second new rule.",
+			},
+		]);
 
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps(llmResponse));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps(llmResponse),
+		);
 		assert.notEqual(result, null);
 		assert.ok(result!.diffLines > 0);
 	});
@@ -265,7 +381,8 @@ describe("runReflection", () => {
 			{
 				type: "strengthen",
 				old_text: "- **Keep code DRY**: NEVER duplicate logic.",
-				new_text: "- **Keep code DRY (CRITICAL)**: NEVER duplicate logic. Parameterize always.",
+				new_text:
+					"- **Keep code DRY (CRITICAL)**: NEVER duplicate logic. Parameterize always.",
 			},
 			{
 				type: "strengthen",
@@ -274,10 +391,19 @@ describe("runReflection", () => {
 			},
 		]);
 
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps(llmResponse));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps(llmResponse),
+		);
 		assert.notEqual(result, null);
 		assert.equal(result!.editsApplied, 1);
-		assert.ok(notifications.some(n => n.level === "warning" && n.msg.includes("1 skipped")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "warning" && n.msg.includes("1 skipped"),
+			),
+		);
 	});
 
 	it("does not write file when result would be suspiciously small", async () => {
@@ -288,17 +414,28 @@ describe("runReflection", () => {
 		const target = makeTarget({ path: fp });
 
 		// An edit that would replace most of the content with almost nothing
-		const llmResponse = makeLlmResponse([{
-			type: "strengthen",
-			old_text: "x".repeat(10000),
-			new_text: "tiny",
-		}]);
+		const llmResponse = makeLlmResponse([
+			{
+				type: "strengthen",
+				old_text: "x".repeat(10000),
+				new_text: "tiny",
+			},
+		]);
 
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps(llmResponse));
+		const result = await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps(llmResponse),
+		);
 
 		// The size check should abort — file unchanged
 		assert.equal(result, null);
-		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("suspiciously small")));
+		assert.ok(
+			notifications.some(
+				(n) => n.level === "error" && n.msg.includes("suspiciously small"),
+			),
+		);
 		const unchanged = fs.readFileSync(fp, "utf-8");
 		assert.equal(unchanged, bigContent);
 	});
@@ -311,7 +448,10 @@ describe("runReflection", () => {
 
 		let registryFindCalled = false;
 		const registry = {
-			find: () => { registryFindCalled = true; return { provider: "test", id: "test" }; },
+			find: () => {
+				registryFindCalled = true;
+				return { provider: "test", id: "test" };
+			},
 			getApiKey: async () => "test-key",
 		};
 		const deps: RunReflectionDeps = {
@@ -328,10 +468,21 @@ describe("runReflection", () => {
 		fs.writeFileSync(fp, SAMPLE_AGENTS_MD);
 		const target = makeTarget({ path: fp });
 		const llmResponse = makeLlmResponse([], 0, "Clean.");
-		const result = await runReflection(target, makeModelRegistry(), notify, makeDeps(llmResponse));
+		await runReflection(
+			target,
+			makeModelRegistry(),
+			notify,
+			makeDeps(llmResponse),
+		);
 
-		assert.ok(notifications.some(n => n.msg.includes("Extracting transcripts")));
-		assert.ok(notifications.some(n => n.msg.includes("5 sessions") && n.msg.includes("10 scanned")));
-		assert.ok(notifications.some(n => n.msg.includes("Analyzing with")));
+		assert.ok(
+			notifications.some((n) => n.msg.includes("Extracting transcripts")),
+		);
+		assert.ok(
+			notifications.some(
+				(n) => n.msg.includes("5 sessions") && n.msg.includes("10 scanned"),
+			),
+		);
+		assert.ok(notifications.some((n) => n.msg.includes("Analyzing with")));
 	});
 });
