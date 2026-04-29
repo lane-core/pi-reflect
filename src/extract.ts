@@ -65,7 +65,10 @@ export async function extractTranscript(
 const MAX_ASSISTANT_MSG_CHARS = 2000;
 const MAX_THINKING_MSG_CHARS = 1500;
 
-export function truncateText(text: string | null, limit: number): string | null {
+export function truncateText(
+	text: string | null,
+	limit: number,
+): string | null {
 	if (!text) return text;
 	if (text.length > limit) {
 		return (
@@ -131,8 +134,7 @@ export async function collectTranscripts(
 ): Promise<TranscriptResult> {
 	const targetDates: string[] = [];
 	for (let i = 1; i <= lookbackDays; i++) {
-		const d = new Date();
-		d.setDate(d.getDate() - i);
+		const d = new Date(Date.now() - i * 86_400_000);
 		targetDates.push(d.toISOString().slice(0, 10));
 	}
 	return collectSessionsForDates(targetDates, maxBytes, sessionsDir);
@@ -320,9 +322,9 @@ export function getAvailableSessionDates(): string[] {
 }
 
 function lookbackCutoff(lookbackDays: number): string {
-	const d = new Date();
-	d.setDate(d.getDate() - lookbackDays);
-	return d.toISOString().slice(0, 10);
+	return new Date(Date.now() - lookbackDays * 86_400_000)
+		.toISOString()
+		.slice(0, 10);
 }
 
 function isWithinLookback(filename: string, cutoff: string): boolean {

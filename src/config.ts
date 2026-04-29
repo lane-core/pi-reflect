@@ -33,7 +33,7 @@ export function computeFileMetrics(content: string): {
 	estTokens: number;
 } {
 	const chars = content.length;
-	const words = content.split(/\s+/).filter(Boolean).length;
+	const words = content.split(/\s+/).filter((s): s is string => !!s).length;
 	const lines = content.split("\n").length;
 	const estTokens = Math.round(chars / 4);
 	return { chars, words, lines, estTokens };
