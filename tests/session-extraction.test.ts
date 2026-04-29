@@ -34,12 +34,12 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, jsonl);
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 2);
-		assert.equal(result[0].role, "user");
-		assert.equal(result[0].text, "Hello");
-		assert.equal(result[1].role, "assistant");
-		assert.equal(result[1].text, "Hi there");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 2);
+		assert.equal(exchanges[0].role, "user");
+		assert.equal(exchanges[0].text, "Hello");
+		assert.equal(exchanges[1].role, "assistant");
+		assert.equal(exchanges[1].text, "Hi there");
 	});
 
 	it("extracts thinking tokens from assistant messages", async () => {
@@ -54,10 +54,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, jsonl);
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 2);
-		assert.equal(result[1].thinking, "Let me think about this...");
-		assert.equal(result[1].text, "Here is the answer");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 2);
+		assert.equal(exchanges[1].thinking, "Let me think about this...");
+		assert.equal(exchanges[1].text, "Here is the answer");
 	});
 
 	it("skips non-message entries", async () => {
@@ -76,8 +76,8 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 2);
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 2);
 	});
 
 	it("skips system and tool roles", async () => {
@@ -107,9 +107,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].role, "user");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
+		assert.equal(exchanges[0].role, "user");
 	});
 
 	it("skips messages with empty/whitespace-only text", async () => {
@@ -133,9 +133,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].text, "Real message");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
+		assert.equal(exchanges[0].text, "Real message");
 	});
 
 	it("handles malformed JSON lines gracefully", async () => {
@@ -152,9 +152,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].text, "Valid");
+		const { exchanges, parseFailures } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
+		assert.equal(exchanges[0].text, "Valid");
+		assert.equal(parseFailures, 4);
 	});
 
 	it("handles messages with non-array content", async () => {
@@ -174,9 +175,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].text, "Array content");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
+		assert.equal(exchanges[0].text, "Array content");
 	});
 
 	it("handles missing message field", async () => {
@@ -191,13 +192,16 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
 	});
 
 	it("returns empty array for nonexistent file", async () => {
-		const result = await extractTranscript("/nonexistent/path/file.jsonl");
-		assert.deepEqual(result, []);
+		const { exchanges, parseFailures } = await extractTranscript(
+			"/nonexistent/path/file.jsonl",
+		);
+		assert.deepEqual(exchanges, []);
+		assert.equal(parseFailures, 0);
 	});
 
 	it("joins multiple text parts in same message", async () => {
@@ -216,9 +220,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].text, "Part one\nPart two");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
+		assert.equal(exchanges[0].text, "Part one\nPart two");
 	});
 
 	it("handles thinking-only assistant messages (no text)", async () => {
@@ -228,10 +232,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, jsonl);
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].text, null);
-		assert.equal(result[0].thinking, "Just thinking, no text output");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
+		assert.equal(exchanges[0].text, null);
+		assert.equal(exchanges[0].thinking, "Just thinking, no text output");
 	});
 
 	it("skips content parts that are null or non-objects", async () => {
@@ -247,9 +251,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const result = await extractTranscript(fp);
-		assert.equal(result.length, 1);
-		assert.equal(result[0].text, "Valid part");
+		const { exchanges } = await extractTranscript(fp);
+		assert.equal(exchanges.length, 1);
+		assert.equal(exchanges[0].text, "Valid part");
 	});
 });
 

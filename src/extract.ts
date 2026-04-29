@@ -10,26 +10,33 @@ import type {
 	TranscriptResult,
 } from "./types.js";
 
+interface ExtractResult {
+	exchanges: SessionExchange[];
+	parseFailures: number;
+}
+
 export async function extractTranscript(
 	filepath: string,
-): Promise<SessionExchange[]> {
+): Promise<ExtractResult> {
 	const exchanges: SessionExchange[] = [];
+	let parseFailures = 0;
 	try {
 		const rl = createInterface({
 			input: createReadStream(filepath),
 			crlfDelay: Infinity,
 		});
 		for await (const line of rl) {
-			let entry: any;
+			let entry: unknown;
 			try {
 				entry = JSON.parse(line);
 			} catch {
+				parseFailures++;
 				continue;
 			}
 
-			if (entry.type !== "message") continue;
+			if (!isRecord(entry) || entry.type !== "message") continue;
 			const msg = entry.message;
-			if (!msg) continue;
+			if (!isRecord(msg)) continue;
 			const role = msg.role;
 			if (role !== "user" && role !== "assistant") continue;
 
@@ -40,10 +47,18 @@ export async function extractTranscript(
 			const thinkingParts: string[] = [];
 
 			for (const part of content) {
-				if (!part || typeof part !== "object") continue;
-				if (part.type === "text" && part.text?.trim()) {
+				if (!isRecord(part)) continue;
+				if (
+					part.type === "text" &&
+					typeof part.text === "string" &&
+					part.text.trim()
+				) {
 					textParts.push(part.text.trim());
-				} else if (part.type === "thinking" && part.thinking?.trim()) {
+				} else if (
+					part.type === "thinking" &&
+					typeof part.thinking === "string" &&
+					part.thinking.trim()
+				) {
 					thinkingParts.push(part.thinking.trim());
 				}
 			}
@@ -59,7 +74,11 @@ export async function extractTranscript(
 	} catch {
 		// Skip unreadable files
 	}
-	return exchanges;
+	return { exchanges, parseFailures };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
 }
 
 const MAX_ASSISTANT_MSG_CHARS = 2000;
@@ -210,6 +229,7 @@ async function collectSessionsForDates(
 
 	const allSessions: SessionData[] = [];
 	let totalScanned = 0;
+	let totalParseFailures = 0;
 
 	for (const dir of sessionDirs) {
 		const project = projectNameFromDir(path.basename(dir));
@@ -238,7 +258,8 @@ async function collectSessionsForDates(
 
 			totalScanned++;
 			const filepath = path.join(dir, file);
-			const exchanges = await extractTranscript(filepath);
+			const { exchanges, parseFailures } = await extractTranscript(filepath);
+			totalParseFailures += parseFailures;
 			const userCount = exchanges.filter((e) => e.role === "user").length;
 
 			if (userCount < 1 || exchanges.length < 3) continue;
@@ -289,9 +310,13 @@ async function collectSessionsForDates(
 		included++;
 	}
 
+	const parseNote =
+		totalParseFailures > 0
+			? `, ${totalParseFailures} malformed line(s) skipped`
+			: "";
 	const header =
 		`# Session Transcripts\n` +
-		`# Sessions scanned: ${totalScanned}, ${allSessions.length} with substantive conversation, ${included} included\n` +
+		`# Sessions scanned: ${totalScanned}, ${allSessions.length} with substantive conversation, ${included} included${parseNote}\n` +
 		`# Total user messages: ${allSessions.reduce((s, sd) => s + sd.userCount, 0)}\n\n`;
 
 	return {
