@@ -12,6 +12,7 @@ import {
 	collectTranscripts,
 	collectTranscriptsFromCommand,
 } from "./extract.js";
+import { buildPromptForTarget } from "./prompt.js";
 import { AnalysisResponseSchema } from "./schemas.js";
 import type {
 	AnalysisEdit,
@@ -24,104 +25,87 @@ import type {
 	SessionData,
 } from "./types.js";
 
-export function buildReflectionPrompt(
-	targetPath: string,
-	targetContent: string,
-	transcripts: string,
-): string {
-	const fileName = path.basename(targetPath);
-	const charCount = targetContent.length;
-	const lineCount = targetContent.split("\n").length;
-	return `You are reviewing recent agent session transcripts to improve ${fileName}.
-
-## CRITICAL: Conciseness
-
-The target file is ${lineCount} lines / ${charCount} chars. Your #1 job is to keep it CONCISE.
-- Every rule should be 1-2 sentences max. If a rule is longer, condense it.
-- Remove session counts, escalating repetition tallies, and "this happened N times" histories — the rule itself is what matters, not how many times it was violated.
-- Remove verbose examples when the rule is self-explanatory.
-- Merge rules that say the same thing in different words.
-- Remove rules that are subsumed by other, better-worded rules.
-- A good rule file is SHORT and scannable. Walls of text get ignored by agents.
-
-## Input
-
-### Target file: ${fileName}
-<target_file>
-${targetContent}</target_file>
-
-### Session transcripts
-<transcripts>
-${transcripts}</transcripts>
-
-## Step 1: Identify Correction Patterns
-
-Read the transcripts for genuine corrections — user redirecting the agent, expressing frustration, repeating themselves, or correcting approach. Ignore normal flow ("no worries", "actually that looks good").
-
-For each correction: what the agent did wrong, what the user wanted, and which rule (if any) already covers it.
-
-## Step 2: Propose Edits (prioritize conciseness)
-
-Four edit types available:
-1. **strengthen**: Tighten an existing rule's wording (make it clearer/shorter, not longer).
-2. **add**: Add a new rule for a pattern with 2+ occurrences. Keep it to 1-2 sentences.
-3. **remove**: Delete a rule that is redundant (covered by another rule), obsolete, or overly verbose noise.
-4. **merge**: Consolidate 2+ rules that overlap into one concise rule.
-
-Guidelines:
-- Prefer strengthen/merge/remove over add. The file should get SHORTER or stay the same size, not grow.
-- When strengthening, make the rule SHORTER and CLEARER — don't add history or examples unless essential.
-- Strip "This happened in N sessions", "RECURRING", session dates, escalating violation counts. The rule text is enough.
-- Don't reorganize or restructure the file. Minimal, targeted edits only.
-- Don't add one-off rules. Only patterns with 2+ occurrences.
-
-## Step 3: Output
-
-IMPORTANT: Your ENTIRE response must be a single JSON object. No markdown, no preamble.
-
-For "strengthen": old_text = COMPLETE bullet/rule copied exactly. new_text = shorter/clearer replacement.
-For "add": after_text = COMPLETE bullet/line copied exactly. new_text = concise new bullet (1-2 sentences).
-For "remove": old_text = COMPLETE bullet/rule to delete. new_text = "" (empty string).
-For "merge": merge_sources = array of COMPLETE bullets to consolidate. new_text = single concise replacement. The merged text replaces the first source; others are removed.
-
-{
-  "corrections_found": <number>,
-  "sessions_with_corrections": <number>,
-  "edits": [
-    {
-      "type": "strengthen" | "add" | "remove" | "merge",
-      "section": "which section of the file",
-      "old_text": "exact text to find (strengthen/remove) or null (add/merge)",
-      "new_text": "replacement/new text, or empty string for remove",
-      "after_text": "insertion point (add only) or null",
-      "merge_sources": ["exact text 1", "exact text 2"] or null (merge only),
-      "reason": "brief reason for this edit"
-    }
-  ],
-  "patterns_not_added": [
-    { "pattern": "description", "reason": "why not added" }
-  ],
-  "summary": "2-3 sentence summary"
-}`;
-}
-
-export function buildPromptForTarget(
-	target: ReflectTarget,
-	targetPath: string,
-	targetContent: string,
-	transcripts: string,
-	context?: string,
-): string {
-	if (!target.prompt) {
-		return buildReflectionPrompt(targetPath, targetContent, transcripts);
-	}
-	const fileName = path.basename(targetPath);
-	return target.prompt
-		.replace(/\{fileName\}/g, fileName)
-		.replace(/\{targetContent\}/g, targetContent)
-		.replace(/\{transcripts\}/g, transcripts)
-		.replace(/\{context\}/g, context ?? "");
-}
+const REFLECTION_TOOL_SCHEMA = {
+	name: "submit_analysis",
+	description: "Submit the reflection analysis results",
+	parameters: {
+		type: "object" as const,
+		properties: {
+			corrections_found: {
+				type: "number",
+				description: "Number of facts/rules added, updated, or removed",
+			},
+			sessions_with_corrections: {
+				type: "number",
+				description:
+					"Number of conversations containing new facts or corrections",
+			},
+			edits: {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						type: {
+							type: "string",
+							enum: ["strengthen", "add", "remove", "merge"],
+							description:
+								"strengthen = update existing text, add = insert new text, remove = delete redundant text, merge = consolidate multiple rules into one",
+						},
+						section: {
+							type: "string",
+							description: "Which section of the file",
+						},
+						old_text: {
+							type: ["string", "null"],
+							description:
+								"Exact text to find (for strengthen) or null (for add)",
+						},
+						new_text: {
+							type: "string",
+							description:
+								"Replacement text (for strengthen) or new text to insert (for add)",
+						},
+						after_text: {
+							type: ["string", "null"],
+							description: "Text after which to insert (for add) or null",
+						},
+						merge_sources: {
+							type: ["array", "null"],
+							items: { type: "string" },
+							description:
+								"For merge: array of exact text strings to consolidate",
+						},
+						reason: {
+							type: "string",
+							description: "Brief reason for this edit",
+						},
+					},
+					required: ["type", "new_text"],
+				},
+			},
+			patterns_not_added: {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						pattern: { type: "string" },
+						reason: { type: "string" },
+					},
+				},
+			},
+			summary: {
+				type: "string",
+				description: "2-3 sentence summary of what was added/updated",
+			},
+		},
+		required: [
+			"corrections_found",
+			"sessions_with_corrections",
+			"edits",
+			"summary",
+		],
+	},
+};
 
 const ENTRY_SEPARATOR = "\n---\n\n";
 
@@ -180,88 +164,6 @@ export async function analyzeTranscriptBatch(
 		context,
 	);
 
-	const reflectAnalysisTool = {
-		name: "submit_analysis",
-		description: "Submit the reflection analysis results",
-		parameters: {
-			type: "object" as const,
-			properties: {
-				corrections_found: {
-					type: "number",
-					description: "Number of facts/rules added, updated, or removed",
-				},
-				sessions_with_corrections: {
-					type: "number",
-					description:
-						"Number of conversations containing new facts or corrections",
-				},
-				edits: {
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							type: {
-								type: "string",
-								enum: ["strengthen", "add", "remove", "merge"],
-								description:
-									"strengthen = update existing text, add = insert new text, remove = delete redundant text, merge = consolidate multiple rules into one",
-							},
-							section: {
-								type: "string",
-								description: "Which section of the file",
-							},
-							old_text: {
-								type: ["string", "null"],
-								description:
-									"Exact text to find (for strengthen) or null (for add)",
-							},
-							new_text: {
-								type: "string",
-								description:
-									"Replacement text (for strengthen) or new text to insert (for add)",
-							},
-							after_text: {
-								type: ["string", "null"],
-								description: "Text after which to insert (for add) or null",
-							},
-							merge_sources: {
-								type: ["array", "null"],
-								items: { type: "string" },
-								description:
-									"For merge: array of exact text strings to consolidate",
-							},
-							reason: {
-								type: "string",
-								description: "Brief reason for this edit",
-							},
-						},
-						required: ["type", "new_text"],
-					},
-				},
-				patterns_not_added: {
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							pattern: { type: "string" },
-							reason: { type: "string" },
-						},
-					},
-				},
-				summary: {
-					type: "string",
-					description: "2-3 sentence summary of what was added/updated",
-				},
-			},
-			required: [
-				"corrections_found",
-				"sessions_with_corrections",
-				"edits",
-				"summary",
-			],
-		},
-	};
-
 	const response = await completeFn(
 		model,
 		{
@@ -274,7 +176,7 @@ export async function analyzeTranscriptBatch(
 					timestamp: Date.now(),
 				},
 			],
-			tools: [reflectAnalysisTool],
+			tools: [REFLECTION_TOOL_SCHEMA],
 		},
 		{ apiKey, maxTokens: 16384 },
 	);

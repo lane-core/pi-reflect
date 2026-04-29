@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildReflectionPrompt } from "../src/reflect.js";
+import { buildReflectionPrompt } from "../src/prompt.js";
 import { SAMPLE_AGENTS_MD } from "./helpers.js";
 
 describe("buildReflectionPrompt", () => {
