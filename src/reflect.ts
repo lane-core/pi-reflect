@@ -410,6 +410,216 @@ async function collectReflectionContext(
 	return context;
 }
 
+function computeSourceDate(
+	target: ReflectTarget,
+	options: ReflectionOptions | undefined,
+): string {
+	if (options?.sourceDateOverride) return options.sourceDateOverride;
+	return new Date(Date.now() - target.lookbackDays * 86_400_000)
+		.toISOString()
+		.slice(0, 10);
+}
+
+interface AnalysisLoopResult {
+	edits: AnalysisEdit[];
+	correctionsFound: number;
+	summaries: string[];
+}
+
+async function runAnalysisLoop(
+	target: ReflectTarget,
+	targetPath: string,
+	targetContent: string,
+	context: string,
+	model: unknown,
+	apiKey: string,
+	modelLabel: string,
+	notify: NotifyFn,
+	completeFn: (model: any, request: any, options: any) => Promise<any>,
+	allSessions: SessionData[] | undefined,
+	transcripts: string,
+	totalSessionCount: number,
+	batchBudget: number,
+	needsBatching: boolean | undefined,
+): Promise<AnalysisLoopResult | null> {
+	const allEdits: AnalysisEdit[] = [];
+	let totalCorrectionsFound = 0;
+	const allSummaries: string[] = [];
+
+	if (needsBatching && allSessions) {
+		const batches = buildTranscriptBatches(allSessions, batchBudget);
+		notify(
+			`Sessions exceed context budget — splitting into ${batches.length} batches`,
+			"info",
+		);
+
+		for (let i = 0; i < batches.length; i++) {
+			const batchTranscripts = formatBatchTranscripts(
+				batches[i],
+				i,
+				batches.length,
+				totalSessionCount,
+			);
+			const currentContent =
+				i === 0 ? targetContent : fs.readFileSync(targetPath, "utf-8");
+			notify(
+				`Analyzing batch ${i + 1}/${batches.length} (${batches[i].length} sessions, ${(batchTranscripts.length / 1024).toFixed(0)}KB) with ${modelLabel}...`,
+				"info",
+			);
+
+			const result = await analyzeTranscriptBatch(
+				target,
+				targetPath,
+				currentContent,
+				batchTranscripts,
+				context,
+				model,
+				apiKey,
+				notify,
+				completeFn,
+			);
+
+			if (!result) continue;
+
+			allEdits.push(...result.edits);
+			totalCorrectionsFound += result.correctionsFound;
+			if (result.summary) allSummaries.push(result.summary);
+
+			if (result.edits.length > 0) {
+				const currentForApply = fs.readFileSync(targetPath, "utf-8");
+				const { result: updated, applied } = applyEdits(
+					currentForApply,
+					result.edits,
+				);
+				if (applied > 0) {
+					if (i === 0) {
+						const bkDir = resolvePath(target.backupDir || DEFAULT_BACKUP_DIR);
+						fs.mkdirSync(bkDir, { recursive: true });
+						const bkPath = path.join(
+							bkDir,
+							`${path.basename(targetPath, ".md")}_${formatTimestamp()}.md`,
+						);
+						fs.copyFileSync(targetPath, bkPath);
+					}
+					fs.writeFileSync(targetPath, updated, "utf-8");
+					notify(`Batch ${i + 1}: applied ${applied} edit(s)`, "info");
+				}
+			}
+		}
+	} else {
+		notify(`Analyzing with ${modelLabel}...`, "info");
+		const result = await analyzeTranscriptBatch(
+			target,
+			targetPath,
+			targetContent,
+			transcripts,
+			context,
+			model,
+			apiKey,
+			notify,
+			completeFn,
+		);
+		if (!result) return null;
+		allEdits.push(...result.edits);
+		totalCorrectionsFound += result.correctionsFound;
+		if (result.summary) allSummaries.push(result.summary);
+	}
+
+	return {
+		edits: allEdits,
+		correctionsFound: totalCorrectionsFound,
+		summaries: allSummaries,
+	};
+}
+
+interface EditApplicationResult {
+	result: string;
+	applied: number;
+	skipped: string[];
+	backupPath: string;
+}
+
+function applyEditsWithBackup(
+	targetPath: string,
+	targetContent: string,
+	edits: AnalysisEdit[],
+	backupDir: string,
+	notify: NotifyFn,
+): EditApplicationResult | null {
+	fs.mkdirSync(backupDir, { recursive: true });
+	const backupPath = path.join(
+		backupDir,
+		`${path.basename(targetPath, ".md")}_${formatTimestamp()}.md`,
+	);
+	fs.copyFileSync(targetPath, backupPath);
+
+	const { result, applied, skipped } = applyEdits(targetContent, edits);
+
+	if (applied === 0) {
+		notify(
+			`All ${edits.length} edits failed to apply. Skipped: ${skipped.join("; ")}`,
+			"warning",
+		);
+		try {
+			fs.unlinkSync(backupPath);
+		} catch {}
+		return null;
+	}
+
+	if (result.length < targetContent.length * 0.5) {
+		notify(
+			`Result is suspiciously small (${result.length} vs ${targetContent.length} bytes). Aborting.`,
+			"error",
+		);
+		return null;
+	}
+
+	fs.writeFileSync(targetPath, result, "utf-8");
+	return { result, applied, skipped, backupPath };
+}
+
+function computeDiffLines(original: string, final: string): number {
+	const originalLines = original.split("\n");
+	const resultLines = final.split("\n");
+	let diffLines = 0;
+	const maxLen = Math.max(originalLines.length, resultLines.length);
+	for (let i = 0; i < maxLen; i++) {
+		if (originalLines[i] !== resultLines[i]) diffLines++;
+	}
+	return diffLines;
+}
+
+async function gitCommitReflection(
+	targetPath: string,
+	totalApplied: number,
+	totalSessionCount: number,
+	notify: NotifyFn,
+): Promise<void> {
+	try {
+		const realPath = fs.realpathSync(targetPath);
+		const repoDir = path.dirname(realPath);
+		if (fs.existsSync(path.join(repoDir, ".git"))) {
+			const { execFileSync } = await import("node:child_process");
+			execFileSync("git", ["add", "-A"], {
+				cwd: repoDir,
+				stdio: "ignore",
+				timeout: 5000,
+			});
+			execFileSync(
+				"git",
+				[
+					"commit",
+					"-m",
+					`reflect: ${path.basename(realPath)} — ${totalApplied} edits from ${totalSessionCount} sessions`,
+					"--no-verify",
+				],
+				{ cwd: repoDir, stdio: "ignore", timeout: 5000 },
+			);
+			notify(`Committed to ${path.basename(repoDir)}`, "info");
+		}
+	} catch {}
+}
+
 export async function runReflection(
 	target: ReflectTarget,
 	modelRegistry: unknown,
@@ -458,105 +668,30 @@ export async function runReflection(
 	const needsBatching =
 		allSessions && allSessions.length > 0 && totalBytes > batchBudget;
 
-	let allEdits: AnalysisEdit[] = [];
-	let totalCorrectionsFound = 0;
-	const allSummaries: string[] = [];
+	const analysis = await runAnalysisLoop(
+		target,
+		targetPath,
+		targetContent,
+		context,
+		model,
+		apiKey,
+		modelLabel,
+		notify,
+		completeFn,
+		allSessions,
+		transcripts,
+		totalSessionCount,
+		batchBudget,
+		needsBatching,
+	);
+	if (!analysis) return null;
+	const { edits, correctionsFound, summaries } = analysis;
 
-	if (needsBatching) {
-		const batches = buildTranscriptBatches(allSessions!, batchBudget);
-		notify(
-			`Sessions exceed context budget — splitting into ${batches.length} batches`,
-			"info",
-		);
-
-		for (let i = 0; i < batches.length; i++) {
-			const batchTranscripts = formatBatchTranscripts(
-				batches[i],
-				i,
-				batches.length,
-				totalSessionCount,
-			);
-			const currentContent =
-				i === 0 ? targetContent : fs.readFileSync(targetPath, "utf-8");
-			notify(
-				`Analyzing batch ${i + 1}/${batches.length} (${batches[i].length} sessions, ${(batchTranscripts.length / 1024).toFixed(0)}KB) with ${modelLabel}...`,
-				"info",
-			);
-
-			const result = await analyzeTranscriptBatch(
-				target,
-				targetPath,
-				currentContent,
-				batchTranscripts,
-				context,
-				model,
-				apiKey!,
-				notify,
-				completeFn,
-			);
-
-			if (!result) continue;
-
-			allEdits.push(...result.edits);
-			totalCorrectionsFound += result.correctionsFound;
-			if (result.summary) allSummaries.push(result.summary);
-
-			if (result.edits.length > 0) {
-				const currentForApply = fs.readFileSync(targetPath, "utf-8");
-				const { result: updated, applied } = applyEdits(
-					currentForApply,
-					result.edits,
-				);
-				if (applied > 0) {
-					if (i === 0) {
-						const bkDir = resolvePath(target.backupDir || DEFAULT_BACKUP_DIR);
-						fs.mkdirSync(bkDir, { recursive: true });
-						const bkPath = path.join(
-							bkDir,
-							`${path.basename(targetPath, ".md")}_${formatTimestamp()}.md`,
-						);
-						fs.copyFileSync(targetPath, bkPath);
-					}
-					fs.writeFileSync(targetPath, updated, "utf-8");
-					notify(`Batch ${i + 1}: applied ${applied} edit(s)`, "info");
-				}
-			}
-		}
-	} else {
-		notify(`Analyzing with ${modelLabel}...`, "info");
-		const result = await analyzeTranscriptBatch(
-			target,
-			targetPath,
-			targetContent,
-			transcripts,
-			context,
-			model,
-			apiKey!,
-			notify,
-			completeFn,
-		);
-		if (!result) return null;
-		allEdits = result.edits;
-		totalCorrectionsFound = result.correctionsFound;
-		if (result.summary) allSummaries.push(result.summary);
-	}
-
-	const edits = allEdits;
-	const correctionsFound = totalCorrectionsFound;
 	const correctionRate =
 		totalSessionCount > 0 ? correctionsFound / totalSessionCount : 0;
-
-	let sourceDateStr: string;
-	if (options?.sourceDateOverride) {
-		sourceDateStr = options.sourceDateOverride;
-	} else {
-		const sourceDate = new Date();
-		sourceDate.setDate(sourceDate.getDate() - target.lookbackDays);
-		sourceDateStr = sourceDate.toISOString().slice(0, 10);
-	}
-
+	const sourceDateStr = computeSourceDate(target, options);
 	const combinedSummary =
-		allSummaries.join(" ") ||
+		summaries.join(" ") ||
 		`${edits.length} edits from ${totalSessionCount} sessions.`;
 
 	if (edits.length === 0) {
@@ -578,7 +713,6 @@ export async function runReflection(
 
 	if (options?.dryRun) {
 		const editRecords = toEditRecords(edits);
-
 		notify(`[dry run] ${combinedSummary}`, "info");
 		return {
 			timestamp: new Date().toISOString(),
@@ -595,90 +729,44 @@ export async function runReflection(
 		};
 	}
 
-	// Apply edits
 	const backupDir = resolvePath(target.backupDir || DEFAULT_BACKUP_DIR);
 	let totalApplied = 0;
 
 	if (needsBatching) {
 		totalApplied = edits.length;
 	} else {
-		fs.mkdirSync(backupDir, { recursive: true });
-		const backupPath = path.join(
+		const applied = applyEditsWithBackup(
+			targetPath,
+			targetContent,
+			edits,
 			backupDir,
-			`${path.basename(targetPath, ".md")}_${formatTimestamp()}.md`,
+			notify,
 		);
-		fs.copyFileSync(targetPath, backupPath);
-
-		const { result, applied, skipped } = applyEdits(targetContent, edits);
-
-		if (applied === 0) {
+		if (!applied) return null;
+		totalApplied = applied.applied;
+		if (applied.skipped.length > 0) {
 			notify(
-				`All ${edits.length} edits failed to apply. Skipped: ${skipped.join("; ")}`,
-				"warning",
-			);
-			try {
-				fs.unlinkSync(backupPath);
-			} catch {}
-			return null;
-		}
-
-		if (result.length < targetContent.length * 0.5) {
-			notify(
-				`Result is suspiciously small (${result.length} vs ${targetContent.length} bytes). Aborting.`,
-				"error",
-			);
-			return null;
-		}
-
-		fs.writeFileSync(targetPath, result, "utf-8");
-		totalApplied = applied;
-
-		if (skipped.length > 0) {
-			notify(
-				`Applied ${applied}/${edits.length} edits (${skipped.length} skipped). Backup: ${backupPath}`,
+				`Applied ${applied.applied}/${edits.length} edits (${applied.skipped.length} skipped). Backup: ${applied.backupPath}`,
 				"warning",
 			);
 		} else {
-			notify(`Applied ${applied} edit(s). Backup: ${backupPath}`, "info");
+			notify(
+				`Applied ${applied.applied} edit(s). Backup: ${applied.backupPath}`,
+				"info",
+			);
 		}
 	}
 
-	// Compute final diff
 	const finalContent = fs.readFileSync(targetPath, "utf-8");
-	const originalLines = targetContent.split("\n");
-	const resultLines = finalContent.split("\n");
-	let diffLines = 0;
-	const maxLen = Math.max(originalLines.length, resultLines.length);
-	for (let i = 0; i < maxLen; i++) {
-		if (originalLines[i] !== resultLines[i]) diffLines++;
-	}
+	const diffLines = computeDiffLines(targetContent, finalContent);
 
 	notify(combinedSummary, "info");
-
-	// Git commit
-	try {
-		const realPath = fs.realpathSync(targetPath);
-		const repoDir = path.dirname(realPath);
-		if (fs.existsSync(path.join(repoDir, ".git"))) {
-			const { execFileSync } = await import("node:child_process");
-			execFileSync("git", ["add", "-A"], {
-				cwd: repoDir,
-				stdio: "ignore",
-				timeout: 5000,
-			});
-			execFileSync(
-				"git",
-				[
-					"commit",
-					"-m",
-					`reflect: ${path.basename(realPath)} — ${totalApplied} edits from ${totalSessionCount} sessions`,
-					"--no-verify",
-				],
-				{ cwd: repoDir, stdio: "ignore", timeout: 5000 },
-			);
-			notify(`Committed to ${path.basename(repoDir)}`, "info");
-		}
-	} catch {}
+	await gitCommitReflection(
+		targetPath,
+		totalApplied,
+		totalSessionCount,
+		notify,
+	);
 
 	const editRecords = toEditRecords(edits);
 
@@ -693,6 +781,6 @@ export async function runReflection(
 		correctionRate,
 		edits: editRecords,
 		sourceDate: sourceDateStr,
-		fileSize: computeFileMetrics(fs.readFileSync(targetPath, "utf-8")),
+		fileSize: computeFileMetrics(finalContent),
 	};
 }
