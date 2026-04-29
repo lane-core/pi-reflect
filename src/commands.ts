@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	CONFIG_FILE,
+	computeFileMetrics,
 	loadConfig,
 	loadHistory,
 	resolvePath,
@@ -14,7 +15,12 @@ import {
 	getAvailableSessionDates,
 } from "./extract.js";
 import { runReflection } from "./reflect.js";
-import type { NotifyFn, ReflectRun, ReflectTarget } from "./types.js";
+import type {
+	NotifyFn,
+	ReflectConfig,
+	ReflectRun,
+	ReflectTarget,
+} from "./types.js";
 
 export function targetLabel(filePath: string): string {
 	const dir = path.basename(path.dirname(filePath));
@@ -23,7 +29,7 @@ export function targetLabel(filePath: string): string {
 
 export function registerReflectCommand(
 	pi: ExtensionAPI,
-	getModelRegistry: () => any,
+	getModelRegistry: () => unknown,
 ) {
 	pi.registerCommand("reflect", {
 		description:
@@ -35,12 +41,12 @@ export function registerReflectCommand(
 			let target: ReflectTarget;
 
 			if (targetPath) {
-				const config = loadConfig();
+				const config = loadConfig().unwrapOr({ targets: [] });
 				const existing = config.targets.find(
 					(t) => resolvePath(t.path) === resolvePath(targetPath),
 				);
 				target = existing ?? {
-					...(loadConfig().targets[0] ?? {
+					...(loadConfig().unwrapOr({ targets: [] }).targets[0] ?? {
 						path: "",
 						schedule: "manual",
 						model: "",
@@ -52,7 +58,7 @@ export function registerReflectCommand(
 					path: targetPath,
 				};
 			} else {
-				const config = loadConfig();
+				const config = loadConfig().unwrapOr({ targets: [] } as ReflectConfig);
 				if (config.targets.length === 0) {
 					if (ctx.hasUI) {
 						const filePath = await ctx.ui.input(
@@ -78,8 +84,14 @@ export function registerReflectCommand(
 						);
 						if (save) {
 							config.targets.push(target);
-							saveConfig(config);
-							ctx.ui.notify("Saved to reflect.json", "info");
+							saveConfig(config).match(
+								() => ctx.ui.notify("Saved to reflect.json", "info"),
+								(err) =>
+									ctx.ui.notify(
+										`Failed to save config: ${err.message}`,
+										"error",
+									),
+							);
 						}
 					} else {
 						console.error("No targets configured. Use: /reflect <path>");
@@ -107,7 +119,7 @@ export function registerReflectCommand(
 				? (msg, level) => ctx.ui.notify(msg, level)
 				: (msg, level) => console.log(`[reflect] [${level}] ${msg}`);
 
-			let currentModel: any;
+			let currentModel: unknown;
 			let currentModelApiKey: string | undefined;
 			if (ctx.model) {
 				const key = await ctx.modelRegistry.getApiKey(ctx.model);
@@ -129,9 +141,17 @@ export function registerReflectCommand(
 			);
 
 			if (run) {
-				const history = loadHistory();
-				history.push(run);
-				saveHistory(history);
+				loadHistory().match(
+					(history) => {
+						history.push(run);
+						saveHistory(history).match(
+							() => {},
+							(err) =>
+								notify(`Failed to save history: ${err.message}`, "error"),
+						);
+					},
+					(err) => notify(`Failed to load history: ${err.message}`, "error"),
+				);
 			}
 		},
 	});
@@ -141,7 +161,7 @@ export function registerConfigCommand(pi: ExtensionAPI) {
 	pi.registerCommand("reflect-config", {
 		description: "Show and manage reflection targets",
 		handler: async (_args, ctx) => {
-			const config = loadConfig();
+			const config = loadConfig().unwrapOr({ targets: [] });
 
 			if (!ctx.hasUI) {
 				console.log(JSON.stringify(config, null, 2));
@@ -172,7 +192,7 @@ export function registerHistoryCommand(pi: ExtensionAPI) {
 	pi.registerCommand("reflect-history", {
 		description: "Show recent reflection runs",
 		handler: async (_args, ctx) => {
-			const history = loadHistory();
+			const history = loadHistory().unwrapOr([]);
 
 			if (history.length === 0) {
 				if (ctx.hasUI) {
@@ -200,25 +220,12 @@ export function registerHistoryCommand(pi: ExtensionAPI) {
 	});
 }
 
-function computeFileMetrics(content: string): {
-	chars: number;
-	words: number;
-	lines: number;
-	estTokens: number;
-} {
-	const chars = content.length;
-	const words = content.split(/\s+/).filter(Boolean).length;
-	const lines = content.split("\n").length;
-	const estTokens = Math.round(chars / 4);
-	return { chars, words, lines, estTokens };
-}
-
 export function registerStatsCommand(pi: ExtensionAPI) {
 	pi.registerCommand("reflect-stats", {
 		description:
 			"Show reflection impact metrics: correction rate trend and rule recidivism, grouped by target file",
 		handler: async (args, ctx) => {
-			const history = loadHistory();
+			const history = loadHistory().unwrapOr([]);
 
 			if (history.length < 2) {
 				const msg =
@@ -232,7 +239,11 @@ export function registerStatsCommand(pi: ExtensionAPI) {
 			}
 
 			function getDate(r: ReflectRun): string {
-				return r.sourceDate ?? (r as any).date ?? r.timestamp.slice(0, 10);
+				return (
+					r.sourceDate ??
+					((r as unknown as Record<string, unknown>).date as string) ??
+					r.timestamp.slice(0, 10)
+				);
 			}
 
 			const byTarget = new Map<string, ReflectRun[]>();
@@ -474,7 +485,7 @@ export function registerStatsCommand(pi: ExtensionAPI) {
 
 export function registerBackfillCommand(
 	pi: ExtensionAPI,
-	getModelRegistry: () => any,
+	getModelRegistry: () => unknown,
 ) {
 	pi.registerCommand("reflect-backfill", {
 		description:
@@ -487,7 +498,7 @@ export function registerBackfillCommand(
 				return;
 			}
 
-			const config = loadConfig();
+			const config = loadConfig().unwrapOr({ targets: [] });
 			if (config.targets.length === 0) {
 				ctx.ui.notify(
 					"No targets configured. Use /reflect <path> to add one.",
@@ -514,7 +525,7 @@ export function registerBackfillCommand(
 				return;
 			}
 
-			const history = loadHistory();
+			const history = loadHistory().unwrapOr([]);
 			const plan: { target: ReflectTarget; dates: string[] }[] = [];
 
 			for (const target of piSessionTargets) {
@@ -522,8 +533,11 @@ export function registerBackfillCommand(
 				const coveredDates = new Set(
 					history
 						.filter((r) => r.targetPath === targetPath)
-						.map((r) => r.sourceDate ?? (r as any).date)
-						.filter(Boolean),
+						.map(
+							(r) =>
+								r.sourceDate ?? (r as unknown as Record<string, unknown>).date,
+						)
+						.filter((d): d is string => typeof d === "string"),
 				);
 				const missingDates = allDates.filter((d) => !coveredDates.has(d));
 				if (missingDates.length > 0) {
@@ -542,9 +556,11 @@ export function registerBackfillCommand(
 			const { getModel } = await import("@mariozechner/pi-ai");
 			const target0 = plan[0].target;
 			const [provider, modelId] = target0.model.split("/", 2);
-			let model = getModel(provider as any, modelId as any);
+			let model: unknown = getModel(provider as never, modelId as never);
 			if (!model) {
-				model = modelRegistryRef?.find(provider, modelId);
+				model = (
+					modelRegistryRef as { find?: (p: string, m: string) => unknown }
+				)?.find?.(provider, modelId);
 			}
 
 			const totalCalls = plan.reduce((s, p) => s + p.dates.length, 0);
@@ -552,11 +568,14 @@ export function registerBackfillCommand(
 			const estOutputTokensPerCall = 2_000;
 
 			let costEstimate = "unknown";
-			if (model?.cost) {
+			if (model && typeof model === "object" && "cost" in model) {
+				const cost = (model as unknown as Record<string, unknown>)
+					.cost as Record<string, number>;
 				const inputCost =
-					(totalCalls * estInputTokensPerCall * model.cost.input) / 1_000_000;
+					(totalCalls * estInputTokensPerCall * (cost.input ?? 0)) / 1_000_000;
 				const outputCost =
-					(totalCalls * estOutputTokensPerCall * model.cost.output) / 1_000_000;
+					(totalCalls * estOutputTokensPerCall * (cost.output ?? 0)) /
+					1_000_000;
 				costEstimate = `$${(inputCost + outputCost).toFixed(2)}`;
 			}
 
@@ -589,7 +608,7 @@ export function registerBackfillCommand(
 
 			let completed = 0;
 			let failed = 0;
-			const updatedHistory = loadHistory();
+			const updatedHistory = loadHistory().unwrapOr([] as ReflectRun[]);
 
 			for (const p of plan) {
 				const fileName = targetLabel(p.target.path);
@@ -635,7 +654,11 @@ export function registerBackfillCommand(
 
 					if (run) {
 						updatedHistory.push(run);
-						saveHistory(updatedHistory);
+						saveHistory(updatedHistory).match(
+							() => {},
+							(err) =>
+								notify(`Failed to save history: ${err.message}`, "error"),
+						);
 						completed++;
 					} else {
 						failed++;
@@ -653,7 +676,7 @@ export function registerBackfillCommand(
 
 export function registerCommands(
 	pi: ExtensionAPI,
-	getModelRegistry: () => any,
+	getModelRegistry: () => unknown,
 ) {
 	registerReflectCommand(pi, getModelRegistry);
 	registerConfigCommand(pi);
