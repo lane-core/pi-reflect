@@ -15,30 +15,6 @@ export class FileError extends Error {
 	}
 }
 
-export class ValidationError extends Error {
-	constructor(
-		message: string,
-		public readonly cause: unknown,
-	) {
-		super(message);
-		this.name = "ValidationError";
-	}
-}
-
-export class LLMError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "LLMError";
-	}
-}
-
-export class ReflectionError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "ReflectionError";
-	}
-}
-
 export class ConfigError extends Error {
 	constructor(message: string) {
 		super(message);
