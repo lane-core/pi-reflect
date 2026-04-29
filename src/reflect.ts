@@ -340,30 +340,40 @@ function toEditRecords(edits: AnalysisEdit[]) {
 		}));
 }
 
-export async function runReflection(
-	target: ReflectTarget,
-	modelRegistry: any,
+async function loadTarget(
+	targetPath: string,
 	notify: NotifyFn,
-	deps?: RunReflectionDeps,
-	options?: ReflectionOptions,
-): Promise<ReflectRun | null> {
-	const targetPath = resolvePath(target.path);
-
+): Promise<{ path: string; content: string } | null> {
 	if (!fs.existsSync(targetPath)) {
 		notify(`Target file not found: ${targetPath}`, "error");
 		return null;
 	}
 
-	const targetContent = fs.readFileSync(targetPath, "utf-8");
-	if (targetContent.length < 100) {
+	const content = fs.readFileSync(targetPath, "utf-8");
+	if (content.length < 100) {
 		notify(
-			`Target file too small (${targetContent.length} bytes): ${targetPath}`,
+			`Target file too small (${content.length} bytes): ${targetPath}`,
 			"error",
 		);
 		return null;
 	}
 
-	// Collect transcripts
+	return { path: targetPath, content };
+}
+
+interface TranscriptCollection {
+	transcripts: string;
+	sessionCount: number;
+	includedCount: number;
+	allSessions?: SessionData[];
+}
+
+async function collectReflectionTranscripts(
+	target: ReflectTarget,
+	options: ReflectionOptions | undefined,
+	deps: RunReflectionDeps | undefined,
+	notify: NotifyFn,
+): Promise<TranscriptCollection | null> {
 	let transcripts: string;
 	let sessionCount = 0;
 	let includedCount = 0;
@@ -427,52 +437,115 @@ export async function runReflection(
 		"info",
 	);
 
-	// Resolve model
-	let model: any;
-	let apiKey: string | undefined;
-	let modelLabel: string;
+	return { transcripts, sessionCount, includedCount, allSessions };
+}
 
+interface ResolvedModel {
+	model: unknown;
+	apiKey: string;
+	modelLabel: string;
+}
+
+async function resolveReflectionModel(
+	target: ReflectTarget,
+	modelRegistry: unknown,
+	options: ReflectionOptions | undefined,
+	deps: RunReflectionDeps | undefined,
+	notify: NotifyFn,
+): Promise<ResolvedModel | null> {
 	if (options?.currentModel && options?.currentModelApiKey) {
-		model = options.currentModel;
-		apiKey = options.currentModelApiKey;
-		modelLabel = `${model.provider}/${model.id}`;
-	} else {
-		const getModelFn =
-			deps?.getModel ?? (await import("@mariozechner/pi-ai")).getModel;
-		const [provider, modelId] = target.model.split("/", 2);
-		model = getModelFn(provider as never, modelId as never);
-
-		if (!model) {
-			model = modelRegistry?.find(provider, modelId);
-		}
-		if (!model) {
-			notify(`Model not found: ${target.model}`, "error");
-			return null;
-		}
-
-		apiKey = await modelRegistry?.getApiKey(model);
-		if (!apiKey) {
-			notify(`No API key for model: ${target.model}`, "error");
-			return null;
-		}
-		modelLabel = target.model;
+		const model = options.currentModel as { provider: string; id: string };
+		return {
+			model: options.currentModel,
+			apiKey: options.currentModelApiKey,
+			modelLabel: `${model.provider}/${model.id}`,
+		};
 	}
 
-	// Collect additional context
-	let context = "";
-	if (target.context && target.context.length > 0) {
+	const getModelFn =
+		deps?.getModel ?? (await import("@mariozechner/pi-ai")).getModel;
+	const [provider, modelId] = target.model.split("/", 2);
+	let model = getModelFn(provider as never, modelId as never);
+
+	if (!model) {
+		model = (
+			modelRegistry as Record<string, (p: string, m: string) => unknown>
+		)?.find?.(provider, modelId);
+	}
+	if (!model) {
+		notify(`Model not found: ${target.model}`, "error");
+		return null;
+	}
+
+	const apiKey = await (
+		modelRegistry as { getApiKey?: (m: unknown) => Promise<string | null> }
+	)?.getApiKey?.(model);
+	if (!apiKey) {
+		notify(`No API key for model: ${target.model}`, "error");
+		return null;
+	}
+
+	return { model, apiKey, modelLabel: target.model };
+}
+
+async function collectReflectionContext(
+	target: ReflectTarget,
+	notify: NotifyFn,
+): Promise<string> {
+	if (!target.context || target.context.length === 0) return "";
+
+	notify(
+		`Collecting context from ${target.context.length} source(s)...`,
+		"info",
+	);
+	const context = await collectContext(target.context, target.lookbackDays);
+	if (context) {
 		notify(
-			`Collecting context from ${target.context.length} source(s)...`,
+			`Collected ${(context.length / 1024).toFixed(0)}KB of additional context`,
 			"info",
 		);
-		context = await collectContext(target.context, target.lookbackDays);
-		if (context) {
-			notify(
-				`Collected ${(context.length / 1024).toFixed(0)}KB of additional context`,
-				"info",
-			);
-		}
 	}
+	return context;
+}
+
+export async function runReflection(
+	target: ReflectTarget,
+	modelRegistry: unknown,
+	notify: NotifyFn,
+	deps?: RunReflectionDeps,
+	options?: ReflectionOptions,
+): Promise<ReflectRun | null> {
+	const targetPath = resolvePath(target.path);
+
+	const preflight = await loadTarget(targetPath, notify);
+	if (!preflight) return null;
+	const { content: targetContent } = preflight;
+
+	const txResult = await collectReflectionTranscripts(
+		target,
+		options,
+		deps,
+		notify,
+	);
+	if (!txResult) return null;
+	const { transcripts, includedCount, allSessions } = txResult;
+
+	const totalSessionCount = allSessions ? allSessions.length : includedCount;
+	const totalBytes = allSessions
+		? allSessions.reduce((sum, s) => sum + s.size, 0)
+		: transcripts.length;
+
+	const modelResult = await resolveReflectionModel(
+		target,
+		modelRegistry,
+		options,
+		deps,
+		notify,
+	);
+	if (!modelResult) return null;
+	const { model, apiKey, modelLabel } = modelResult;
+
+	const context = await collectReflectionContext(target, notify);
 
 	const completeFn =
 		deps?.completeSimple ??
