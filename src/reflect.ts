@@ -1,12 +1,18 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { applyEdits } from "./apply.js";
-import { DEFAULT_BACKUP_DIR, formatTimestamp, resolvePath } from "./config.js";
+import {
+	computeFileMetrics,
+	DEFAULT_BACKUP_DIR,
+	formatTimestamp,
+	resolvePath,
+} from "./config.js";
 import {
 	collectContext,
 	collectTranscripts,
 	collectTranscriptsFromCommand,
 } from "./extract.js";
+import { AnalysisResponseSchema } from "./schemas.js";
 import type {
 	AnalysisEdit,
 	AnalysisResult,
@@ -163,7 +169,6 @@ export async function analyzeTranscriptBatch(
 	context: string,
 	model: any,
 	apiKey: string,
-	modelLabel: string,
 	notify: NotifyFn,
 	completeFn: (model: any, request: any, options: any) => Promise<any>,
 ): Promise<AnalysisResult | null> {
@@ -279,23 +284,25 @@ export async function analyzeTranscriptBatch(
 		return null;
 	}
 
-	let analysis: any;
+	let rawAnalysis: unknown;
 	const toolCall = response.content.find(
-		(c: any) => c.type === "toolCall" && c.name === "submit_analysis",
+		(c: unknown) =>
+			(c as Record<string, unknown>).type === "toolCall" &&
+			(c as Record<string, unknown>).name === "submit_analysis",
 	);
-	if (toolCall && (toolCall as any).arguments) {
-		analysis = (toolCall as any).arguments;
+	if (toolCall && (toolCall as Record<string, unknown>).arguments) {
+		rawAnalysis = (toolCall as Record<string, unknown>).arguments;
 	} else {
 		const responseText = response.content
-			.filter((c: any) => c.type === "text")
-			.map((c: any) => c.text)
+			.filter((c: unknown) => (c as Record<string, unknown>).type === "text")
+			.map((c: unknown) => (c as Record<string, unknown>).text as string)
 			.join("")
 			.trim();
 		try {
 			const jsonStr = responseText
 				.replace(/^```json?\s*\n?/m, "")
 				.replace(/\n?```\s*$/m, "");
-			analysis = JSON.parse(jsonStr);
+			rawAnalysis = JSON.parse(jsonStr);
 		} catch {
 			notify(
 				`Failed to parse LLM response as JSON. Raw response:\n${responseText.slice(0, 500)}`,
@@ -305,26 +312,32 @@ export async function analyzeTranscriptBatch(
 		}
 	}
 
+	const parsed = AnalysisResponseSchema.safeParse(rawAnalysis);
+	if (!parsed.success) {
+		notify(`LLM returned invalid structure: ${parsed.error.message}`, "error");
+		return null;
+	}
+
 	return {
-		edits: analysis.edits ?? [],
-		correctionsFound: analysis.corrections_found ?? 0,
-		sessionsWithCorrections: analysis.sessions_with_corrections ?? 0,
-		summary: analysis.summary ?? "",
-		patternsNotAdded: analysis.patterns_not_added,
+		edits: parsed.data.edits,
+		correctionsFound: parsed.data.corrections_found,
+		sessionsWithCorrections: parsed.data.sessions_with_corrections,
+		summary: parsed.data.summary,
+		patternsNotAdded: parsed.data.patterns_not_added,
 	};
 }
 
-function computeFileMetrics(content: string): {
-	chars: number;
-	words: number;
-	lines: number;
-	estTokens: number;
-} {
-	const chars = content.length;
-	const words = content.split(/\s+/).filter(Boolean).length;
-	const lines = content.split("\n").length;
-	const estTokens = Math.round(chars / 4);
-	return { chars, words, lines, estTokens };
+function toEditRecords(edits: AnalysisEdit[]) {
+	return edits
+		.filter(
+			(e): e is AnalysisEdit & { section: string; reason: string } =>
+				!!e.section && !!e.reason,
+		)
+		.map((e) => ({
+			type: e.type ?? "add",
+			section: e.section,
+			reason: e.reason,
+		}));
 }
 
 export async function runReflection(
@@ -427,7 +440,7 @@ export async function runReflection(
 		const getModelFn =
 			deps?.getModel ?? (await import("@mariozechner/pi-ai")).getModel;
 		const [provider, modelId] = target.model.split("/", 2);
-		model = getModelFn(provider as any, modelId as any);
+		model = getModelFn(provider as never, modelId as never);
 
 		if (!model) {
 			model = modelRegistry?.find(provider, modelId);
@@ -503,7 +516,6 @@ export async function runReflection(
 				context,
 				model,
 				apiKey!,
-				modelLabel,
 				notify,
 				completeFn,
 			);
@@ -545,7 +557,6 @@ export async function runReflection(
 			context,
 			model,
 			apiKey!,
-			modelLabel,
 			notify,
 			completeFn,
 		);
@@ -591,13 +602,7 @@ export async function runReflection(
 	}
 
 	if (options?.dryRun) {
-		const editRecords = edits
-			.filter((e: any) => e.section && e.reason)
-			.map((e: any) => ({
-				type: e.type ?? "add",
-				section: e.section,
-				reason: e.reason,
-			}));
+		const editRecords = toEditRecords(edits);
 
 		notify(`[dry run] ${combinedSummary}`, "info");
 		return {
@@ -700,13 +705,7 @@ export async function runReflection(
 		}
 	} catch {}
 
-	const editRecords = edits
-		.filter((e: any) => e.section && e.reason)
-		.map((e: any) => ({
-			type: e.type ?? "add",
-			section: e.section,
-			reason: e.reason,
-		}));
+	const editRecords = toEditRecords(edits);
 
 	return {
 		timestamp: new Date().toISOString(),
