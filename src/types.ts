@@ -2,22 +2,14 @@
  * Shared domain types.
  */
 
+import type { AnalysisEdit, EditType } from "./schemas.js";
+
+export type { AnalysisEdit, EditType };
+
 export type NotifyFn = (
 	msg: string,
 	level: "info" | "warning" | "error",
 ) => void;
-
-export type EditType = "strengthen" | "add" | "remove" | "merge";
-
-export interface AnalysisEdit {
-	type: EditType;
-	section?: string;
-	old_text?: string | null;
-	new_text: string;
-	after_text?: string | null;
-	merge_sources?: string[];
-	reason?: string;
-}
 
 export interface EditRecord {
 	type: EditType;
@@ -89,20 +81,24 @@ export interface AnalysisResult {
 	correctionsFound: number;
 	sessionsWithCorrections: number;
 	summary: string;
-	patternsNotAdded?: any[];
+	patternsNotAdded?: unknown[];
 }
 
 export interface ReflectionOptions {
 	sourceDateOverride?: string;
 	transcriptsOverride?: TranscriptResult;
 	dryRun?: boolean;
-	currentModel?: any;
+	currentModel?: unknown;
 	currentModelApiKey?: string;
 }
 
 export interface RunReflectionDeps {
-	completeSimple: (model: any, request: any, options: any) => Promise<any>;
-	getModel: (provider: string, modelId: string) => any;
+	completeSimple: (
+		model: unknown,
+		request: unknown,
+		options: unknown,
+	) => Promise<unknown>;
+	getModel: (provider: string, modelId: string) => unknown;
 	collectTranscriptsFn?: (
 		lookbackDays: number,
 		maxBytes: number,
@@ -127,5 +123,10 @@ export interface ReflectRun {
 	edits?: EditRecord[];
 	sourceDate?: string;
 	date?: string;
-	fileSize?: { chars: number; words: number; lines: number; estTokens: number };
+	fileSize?: {
+		chars: number;
+		words: number;
+		lines: number;
+		estTokens: number;
+	};
 }
