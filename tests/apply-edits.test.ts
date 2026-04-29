@@ -451,4 +451,28 @@ describe("applyEdits", () => {
 		assert.equal(applied, 0);
 		assert.equal(skipped.length, 1);
 	});
+
+	it("rejects remove when old_text appears on multiple lines (ambiguous)", () => {
+		const content = "- Duplicate\n- Duplicate\n- Other.";
+		const { applied, skipped, result } = applyEdits(content, [
+			{ type: "remove", old_text: "- Duplicate", new_text: "" },
+		]);
+		assert.equal(applied, 0);
+		assert.equal(skipped.length, 1);
+		assert.ok(skipped[0].includes("Ambiguous"));
+		assert.equal(result, content); // file unchanged
+	});
+
+	it("does not accidentally remove a substring embedded in another line", () => {
+		// Old bug: "- Short" would match inside "- Short but longer" via substring replace
+		const content = "- Short but longer\n- Short\n- Other.";
+		const { result, applied } = applyEdits(content, [
+			{ type: "remove", old_text: "- Short", new_text: "" },
+		]);
+		assert.equal(applied, 1);
+		// The standalone "- Short" line was removed
+		assert.ok(!result.includes("- Short\n"));
+		// The substring-containing line is untouched
+		assert.ok(result.includes("- Short but longer"));
+	});
 });
