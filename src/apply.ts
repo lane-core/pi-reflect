@@ -1,5 +1,8 @@
-import { escapeRegex } from "../utils/text.js";
 import type { AnalysisEdit, EditResult } from "./types.js";
+
+export function escapeRegex(str: string): string {
+	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
 	let result = content;
@@ -9,22 +12,30 @@ export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
 	for (const edit of edits) {
 		if (edit.type === "strengthen" && edit.old_text && edit.new_text) {
 			if (!result.includes(edit.old_text)) {
-				skipped.push(`Could not find text to strengthen: "${edit.old_text.slice(0, 80)}..."`);
+				skipped.push(
+					`Could not find text to strengthen: "${edit.old_text.slice(0, 80)}..."`,
+				);
 				continue;
 			}
 
 			const firstIdx = result.indexOf(edit.old_text);
 			const secondIdx = result.indexOf(edit.old_text, firstIdx + 1);
 			if (secondIdx !== -1) {
-				skipped.push(`Ambiguous match (appears multiple times): "${edit.old_text.slice(0, 80)}..."`);
+				skipped.push(
+					`Ambiguous match (appears multiple times): "${edit.old_text.slice(0, 80)}..."`,
+				);
 				continue;
 			}
 
 			if (edit.old_text.length > 50) {
 				const checkSnippet = edit.old_text.slice(0, 50);
-				const occurrences = (edit.new_text.match(new RegExp(escapeRegex(checkSnippet), "g")) || []).length;
+				const occurrences = (
+					edit.new_text.match(new RegExp(escapeRegex(checkSnippet), "g")) || []
+				).length;
 				if (occurrences > 1) {
-					skipped.push(`Duplication detected in replacement text: "${edit.old_text.slice(0, 80)}..."`);
+					skipped.push(
+						`Duplication detected in replacement text: "${edit.old_text.slice(0, 80)}..."`,
+					);
 					continue;
 				}
 			}
@@ -33,34 +44,47 @@ export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
 			applied++;
 		} else if (edit.type === "add" && edit.new_text && edit.after_text) {
 			if (!result.includes(edit.after_text)) {
-				skipped.push(`Could not find insertion point: "${edit.after_text.slice(0, 80)}..."`);
+				skipped.push(
+					`Could not find insertion point: "${edit.after_text.slice(0, 80)}..."`,
+				);
 				continue;
 			}
 
 			const firstIdx = result.indexOf(edit.after_text);
 			const secondIdx = result.indexOf(edit.after_text, firstIdx + 1);
 			if (secondIdx !== -1) {
-				skipped.push(`Ambiguous insertion point (appears multiple times): "${edit.after_text.slice(0, 80)}..."`);
+				skipped.push(
+					`Ambiguous insertion point (appears multiple times): "${edit.after_text.slice(0, 80)}..."`,
+				);
 				continue;
 			}
 
 			if (result.includes(edit.new_text.trim())) {
-				skipped.push(`Text already exists in file: "${edit.new_text.trim().slice(0, 80)}..."`);
+				skipped.push(
+					`Text already exists in file: "${edit.new_text.trim().slice(0, 80)}..."`,
+				);
 				continue;
 			}
 
-			result = result.replace(edit.after_text, edit.after_text + "\n" + edit.new_text);
+			result = result.replace(
+				edit.after_text,
+				edit.after_text + "\n" + edit.new_text,
+			);
 			applied++;
 		} else if (edit.type === "remove" && edit.old_text) {
 			if (!result.includes(edit.old_text)) {
-				skipped.push(`Could not find text to remove: "${edit.old_text.slice(0, 80)}..."`);
+				skipped.push(
+					`Could not find text to remove: "${edit.old_text.slice(0, 80)}..."`,
+				);
 				continue;
 			}
 
 			const firstIdx = result.indexOf(edit.old_text);
 			const secondIdx = result.indexOf(edit.old_text, firstIdx + 1);
 			if (secondIdx !== -1) {
-				skipped.push(`Ambiguous match for removal (appears multiple times): "${edit.old_text.slice(0, 80)}..."`);
+				skipped.push(
+					`Ambiguous match for removal (appears multiple times): "${edit.old_text.slice(0, 80)}..."`,
+				);
 				continue;
 			}
 
@@ -69,7 +93,12 @@ export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
 				result = result.replace(edit.old_text, "");
 			}
 			applied++;
-		} else if (edit.type === "merge" && edit.merge_sources && edit.merge_sources.length > 0 && edit.new_text) {
+		} else if (
+			edit.type === "merge" &&
+			edit.merge_sources &&
+			edit.merge_sources.length > 0 &&
+			edit.new_text
+		) {
 			let firstSourceIdx = Infinity;
 			let firstSourceText = "";
 			let allFound = true;

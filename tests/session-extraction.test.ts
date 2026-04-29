@@ -1,14 +1,19 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
+	collectTranscripts,
 	extractTranscript,
 	formatSessionTranscript,
-	collectTranscripts,
-	type SessionExchange,
-} from "../extensions/reflect.js";
-import { makeTempDir, cleanup, buildSessionJsonl, createSessionFixture } from "./helpers.js";
+} from "../src/extract.js";
+import type { SessionExchange } from "../src/types.js";
+import {
+	buildSessionJsonl,
+	cleanup,
+	createSessionFixture,
+	makeTempDir,
+} from "./helpers.js";
 
 let tmpDir: string;
 
@@ -40,7 +45,11 @@ describe("extractTranscript", () => {
 	it("extracts thinking tokens from assistant messages", async () => {
 		const jsonl = buildSessionJsonl([
 			{ role: "user", text: "Explain X" },
-			{ role: "assistant", text: "Here is the answer", thinking: "Let me think about this..." },
+			{
+				role: "assistant",
+				text: "Here is the answer",
+				thinking: "Let me think about this...",
+			},
 		]);
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, jsonl);
@@ -54,9 +63,15 @@ describe("extractTranscript", () => {
 	it("skips non-message entries", async () => {
 		const lines = [
 			JSON.stringify({ type: "system", data: "ignored" }),
-			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "Hello" }] } }),
+			JSON.stringify({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "Hello" }] },
+			}),
 			JSON.stringify({ type: "tool_call", tool: "bash" }),
-			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Hi" }] } }),
+			JSON.stringify({
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
+			}),
 		];
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
@@ -67,9 +82,27 @@ describe("extractTranscript", () => {
 
 	it("skips system and tool roles", async () => {
 		const lines = [
-			JSON.stringify({ type: "message", message: { role: "system", content: [{ type: "text", text: "System prompt" }] } }),
-			JSON.stringify({ type: "message", message: { role: "tool", content: [{ type: "text", text: "Tool result" }] } }),
-			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "User msg" }] } }),
+			JSON.stringify({
+				type: "message",
+				message: {
+					role: "system",
+					content: [{ type: "text", text: "System prompt" }],
+				},
+			}),
+			JSON.stringify({
+				type: "message",
+				message: {
+					role: "tool",
+					content: [{ type: "text", text: "Tool result" }],
+				},
+			}),
+			JSON.stringify({
+				type: "message",
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "User msg" }],
+				},
+			}),
 		];
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
@@ -81,9 +114,21 @@ describe("extractTranscript", () => {
 
 	it("skips messages with empty/whitespace-only text", async () => {
 		const lines = [
-			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "   " }] } }),
-			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "" }] } }),
-			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "Real message" }] } }),
+			JSON.stringify({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "   " }] },
+			}),
+			JSON.stringify({
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "" }] },
+			}),
+			JSON.stringify({
+				type: "message",
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "Real message" }],
+				},
+			}),
 		];
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
@@ -97,7 +142,10 @@ describe("extractTranscript", () => {
 		const lines = [
 			"not json at all",
 			"{invalid: json}",
-			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "Valid" }] } }),
+			JSON.stringify({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "Valid" }] },
+			}),
 			"",
 			"{{{{",
 		];
@@ -111,8 +159,17 @@ describe("extractTranscript", () => {
 
 	it("handles messages with non-array content", async () => {
 		const lines = [
-			JSON.stringify({ type: "message", message: { role: "user", content: "just a string" } }),
-			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "Array content" }] } }),
+			JSON.stringify({
+				type: "message",
+				message: { role: "user", content: "just a string" },
+			}),
+			JSON.stringify({
+				type: "message",
+				message: {
+					role: "user",
+					content: [{ type: "text", text: "Array content" }],
+				},
+			}),
 		];
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
@@ -126,7 +183,10 @@ describe("extractTranscript", () => {
 		const lines = [
 			JSON.stringify({ type: "message" }), // no message field
 			JSON.stringify({ type: "message", message: null }),
-			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "OK" }] } }),
+			JSON.stringify({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "OK" }] },
+			}),
 		];
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
@@ -180,12 +240,7 @@ describe("extractTranscript", () => {
 				type: "message",
 				message: {
 					role: "user",
-					content: [
-						null,
-						42,
-						"string",
-						{ type: "text", text: "Valid part" },
-					],
+					content: [null, 42, "string", { type: "text", text: "Valid part" }],
 				},
 			}),
 		];
@@ -204,7 +259,11 @@ describe("formatSessionTranscript", () => {
 			{ role: "user", text: "Hello", thinking: null },
 			{ role: "assistant", text: "Hi there", thinking: null },
 		];
-		const result = formatSessionTranscript(exchanges, "2026-02-12 03:00", "myproject");
+		const result = formatSessionTranscript(
+			exchanges,
+			"2026-02-12 03:00",
+			"myproject",
+		);
 		assert.ok(result.includes("### Session: myproject [2026-02-12 03:00]"));
 		assert.ok(result.includes("**USER:** Hello"));
 		assert.ok(result.includes("**AGENT:** Hi there"));
@@ -251,16 +310,18 @@ describe("collectTranscripts", () => {
 		const dateStr = yesterday.toISOString().slice(0, 10);
 		const fileName = `${dateStr}T03:00:00.000Z.jsonl`;
 
-		const sessionsDir = createSessionFixture(tmpDir, [{
-			projectDirName: "test-project",
-			fileName,
-			exchanges: [
-				{ role: "user", text: "Fix the bug" },
-				{ role: "assistant", text: "Looking at it now" },
-				{ role: "user", text: "No, wrong file" },
-				{ role: "assistant", text: "Let me check again" },
-			],
-		}]);
+		const sessionsDir = createSessionFixture(tmpDir, [
+			{
+				projectDirName: "test-project",
+				fileName,
+				exchanges: [
+					{ role: "user", text: "Fix the bug" },
+					{ role: "assistant", text: "Looking at it now" },
+					{ role: "user", text: "No, wrong file" },
+					{ role: "assistant", text: "Let me check again" },
+				],
+			},
+		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
 		assert.equal(result.sessionCount, 1);
@@ -276,16 +337,18 @@ describe("collectTranscripts", () => {
 		const dateStr = oldDate.toISOString().slice(0, 10);
 		const fileName = `${dateStr}T03:00:00.000Z.jsonl`;
 
-		const sessionsDir = createSessionFixture(tmpDir, [{
-			projectDirName: "test-project",
-			fileName,
-			exchanges: [
-				{ role: "user", text: "Old message" },
-				{ role: "assistant", text: "Old reply" },
-				{ role: "user", text: "Old followup" },
-				{ role: "assistant", text: "Old reply 2" },
-			],
-		}]);
+		const sessionsDir = createSessionFixture(tmpDir, [
+			{
+				projectDirName: "test-project",
+				fileName,
+				exchanges: [
+					{ role: "user", text: "Old message" },
+					{ role: "assistant", text: "Old reply" },
+					{ role: "user", text: "Old followup" },
+					{ role: "assistant", text: "Old reply 2" },
+				],
+			},
+		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
 		assert.equal(result.includedCount, 0);
@@ -296,14 +359,16 @@ describe("collectTranscripts", () => {
 		yesterday.setDate(yesterday.getDate() - 1);
 		const dateStr = yesterday.toISOString().slice(0, 10);
 
-		const sessionsDir = createSessionFixture(tmpDir, [{
-			projectDirName: "test-project",
-			fileName: `${dateStr}T03:00:00.000Z.jsonl`,
-			exchanges: [
-				{ role: "user", text: "Hi" },
-				{ role: "assistant", text: "Hello" },
-			],
-		}]);
+		const sessionsDir = createSessionFixture(tmpDir, [
+			{
+				projectDirName: "test-project",
+				fileName: `${dateStr}T03:00:00.000Z.jsonl`,
+				exchanges: [
+					{ role: "user", text: "Hi" },
+					{ role: "assistant", text: "Hello" },
+				],
+			},
+		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
 		// Scanned but not included
@@ -316,16 +381,18 @@ describe("collectTranscripts", () => {
 		yesterday.setDate(yesterday.getDate() - 1);
 		const dateStr = yesterday.toISOString().slice(0, 10);
 
-		const sessionsDir = createSessionFixture(tmpDir, [{
-			projectDirName: "test-project",
-			fileName: `${dateStr}T03:00:00.000Z.jsonl`,
-			exchanges: [
-				{ role: "assistant", text: "I am talking to myself" },
-				{ role: "assistant", text: "Still talking" },
-				{ role: "assistant", text: "Echo echo" },
-				{ role: "assistant", text: "Four messages, no user" },
-			],
-		}]);
+		const sessionsDir = createSessionFixture(tmpDir, [
+			{
+				projectDirName: "test-project",
+				fileName: `${dateStr}T03:00:00.000Z.jsonl`,
+				exchanges: [
+					{ role: "assistant", text: "I am talking to myself" },
+					{ role: "assistant", text: "Still talking" },
+					{ role: "assistant", text: "Echo echo" },
+					{ role: "assistant", text: "Four messages, no user" },
+				],
+			},
+		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
 		assert.equal(result.includedCount, 0);
@@ -362,7 +429,10 @@ describe("collectTranscripts", () => {
 
 		// Very small budget — should only include one session
 		const result = await collectTranscripts(1, 500, sessionsDir);
-		assert.ok(result.includedCount <= 1, `Expected at most 1 included, got ${result.includedCount}`);
+		assert.ok(
+			result.includedCount <= 1,
+			`Expected at most 1 included, got ${result.includedCount}`,
+		);
 	});
 
 	it("skips var-folders directories", async () => {
@@ -388,7 +458,11 @@ describe("collectTranscripts", () => {
 	});
 
 	it("returns empty for nonexistent sessions directory", async () => {
-		const result = await collectTranscripts(1, 1024 * 1024, "/nonexistent/sessions");
+		const result = await collectTranscripts(
+			1,
+			1024 * 1024,
+			"/nonexistent/sessions",
+		);
 		assert.equal(result.transcripts, "");
 		assert.equal(result.sessionCount, 0);
 		assert.equal(result.includedCount, 0);
@@ -432,7 +506,10 @@ describe("collectTranscripts", () => {
 		// High density should come first in the output
 		const highIdx = result.transcripts.indexOf("HIGH_DENSITY_MARKER");
 		const lowIdx = result.transcripts.indexOf("LOW_DENSITY_MARKER");
-		assert.ok(highIdx < lowIdx, "High-density session should appear before low-density");
+		assert.ok(
+			highIdx < lowIdx,
+			"High-density session should appear before low-density",
+		);
 	});
 
 	it("includes header with stats", async () => {
@@ -440,16 +517,18 @@ describe("collectTranscripts", () => {
 		yesterday.setDate(yesterday.getDate() - 1);
 		const dateStr = yesterday.toISOString().slice(0, 10);
 
-		const sessionsDir = createSessionFixture(tmpDir, [{
-			projectDirName: "test-project",
-			fileName: `${dateStr}T03:00:00.000Z.jsonl`,
-			exchanges: [
-				{ role: "user", text: "Q1" },
-				{ role: "assistant", text: "A1" },
-				{ role: "user", text: "Q2" },
-				{ role: "assistant", text: "A2" },
-			],
-		}]);
+		const sessionsDir = createSessionFixture(tmpDir, [
+			{
+				projectDirName: "test-project",
+				fileName: `${dateStr}T03:00:00.000Z.jsonl`,
+				exchanges: [
+					{ role: "user", text: "Q1" },
+					{ role: "assistant", text: "A1" },
+					{ role: "user", text: "Q2" },
+					{ role: "assistant", text: "A2" },
+				],
+			},
+		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
 		assert.ok(result.transcripts.startsWith("# Session Transcripts\n"));
@@ -462,16 +541,18 @@ describe("collectTranscripts", () => {
 		twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
 		const dateStr = twoDaysAgo.toISOString().slice(0, 10);
 
-		const sessionsDir = createSessionFixture(tmpDir, [{
-			projectDirName: "test-project",
-			fileName: `${dateStr}T03:00:00.000Z.jsonl`,
-			exchanges: [
-				{ role: "user", text: "Two days ago" },
-				{ role: "assistant", text: "Reply" },
-				{ role: "user", text: "Follow up" },
-				{ role: "assistant", text: "Reply 2" },
-			],
-		}]);
+		const sessionsDir = createSessionFixture(tmpDir, [
+			{
+				projectDirName: "test-project",
+				fileName: `${dateStr}T03:00:00.000Z.jsonl`,
+				exchanges: [
+					{ role: "user", text: "Two days ago" },
+					{ role: "assistant", text: "Reply" },
+					{ role: "user", text: "Follow up" },
+					{ role: "assistant", text: "Reply 2" },
+				],
+			},
+		]);
 
 		// lookbackDays=1 should miss it
 		const result1 = await collectTranscripts(1, 1024 * 1024, sessionsDir);

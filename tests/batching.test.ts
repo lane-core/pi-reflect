@@ -2,15 +2,14 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import {
-	buildTranscriptBatches,
-	DEFAULT_TARGET,
-	type NotifyFn,
-	type ReflectTarget,
-	type RunReflectionDeps,
-	runReflection,
-	type SessionData,
-} from "../extensions/reflect.js";
+import { DEFAULT_TARGET } from "../src/config.js";
+import { buildTranscriptBatches, runReflection } from "../src/reflect.js";
+import type {
+	NotifyFn,
+	ReflectTarget,
+	RunReflectionDeps,
+	SessionData,
+} from "../src/types.js";
 import { cleanup, makeTempDir, SAMPLE_AGENTS_MD } from "./helpers.js";
 
 // --- buildTranscriptBatches tests ---

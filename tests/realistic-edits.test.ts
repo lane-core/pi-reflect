@@ -1,6 +1,7 @@
-import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { applyEdits, type AnalysisEdit } from "../extensions/reflect.js";
+import { describe, it } from "node:test";
+import { applyEdits } from "../src/apply.js";
+import type { AnalysisEdit } from "../src/types.js";
 import { SAMPLE_AGENTS_MD } from "./helpers.js";
 
 /**
@@ -10,13 +11,18 @@ import { SAMPLE_AGENTS_MD } from "./helpers.js";
 
 describe("realistic LLM edit patterns", () => {
 	it("strengthens a rule with added emphasis and examples", () => {
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			section: "Read Before Acting",
-			old_text: "- **ALWAYS read existing code before writing any code**. The #1 source of rework is acting before understanding.",
-			new_text: '- **ALWAYS read existing code before writing any code**. The #1 source of rework is acting before understanding. If a file, doc, or plan is referenced — read it completely first. If a bug is reported — read the logs first.',
-			reason: "Agent repeatedly started implementing before reading existing code in 5 sessions",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				section: "Read Before Acting",
+				old_text:
+					"- **ALWAYS read existing code before writing any code**. The #1 source of rework is acting before understanding.",
+				new_text:
+					"- **ALWAYS read existing code before writing any code**. The #1 source of rework is acting before understanding. If a file, doc, or plan is referenced — read it completely first. If a bug is reported — read the logs first.",
+				reason:
+					"Agent repeatedly started implementing before reading existing code in 5 sessions",
+			},
+		];
 		const { result, applied } = applyEdits(SAMPLE_AGENTS_MD, edits);
 		assert.equal(applied, 1);
 		assert.ok(result.includes("read the logs first"));
@@ -26,13 +32,18 @@ describe("realistic LLM edit patterns", () => {
 	});
 
 	it("adds a new rule after an existing one", () => {
-		const edits: AnalysisEdit[] = [{
-			type: "add",
-			section: "Rules",
-			after_text: '- **ANTI-OVER-ENGINEERING**: Implement EXACTLY what was asked for. Do NOT add "helpful" additional complexity.',
-			new_text: '- **3-Attempt Rule**: If a fix fails 3 times, STOP. Try a fundamentally different approach or ask the user.',
-			reason: "Agent spiraled into 5+ attempts on the same approach in multiple sessions",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "add",
+				section: "Rules",
+				after_text:
+					'- **ANTI-OVER-ENGINEERING**: Implement EXACTLY what was asked for. Do NOT add "helpful" additional complexity.',
+				new_text:
+					"- **3-Attempt Rule**: If a fix fails 3 times, STOP. Try a fundamentally different approach or ask the user.",
+				reason:
+					"Agent spiraled into 5+ attempts on the same approach in multiple sessions",
+			},
+		];
 		const { result, applied } = applyEdits(SAMPLE_AGENTS_MD, edits);
 		assert.equal(applied, 1);
 		assert.ok(result.includes("3-Attempt Rule"));
@@ -48,19 +59,24 @@ describe("realistic LLM edit patterns", () => {
 				type: "strengthen",
 				section: "Communication Style",
 				old_text: "- Avoid excessive enthusiasm or positivity",
-				new_text: '- Avoid excessive enthusiasm or positivity. When the user says "continue", that means get on with the work.',
+				new_text:
+					'- Avoid excessive enthusiasm or positivity. When the user says "continue", that means get on with the work.',
 			},
 			{
 				type: "add",
 				section: "Read Before Acting",
-				after_text: "- **Verify assumptions**: Before implementing, verify that variable names, function signatures, file paths actually exist.",
-				new_text: "- **Read recent commits when debugging**: ALWAYS run `git log --oneline -10` before diagnosing issues. The user expects you to know what changed recently.",
+				after_text:
+					"- **Verify assumptions**: Before implementing, verify that variable names, function signatures, file paths actually exist.",
+				new_text:
+					"- **Read recent commits when debugging**: ALWAYS run `git log --oneline -10` before diagnosing issues. The user expects you to know what changed recently.",
 			},
 			{
 				type: "strengthen",
 				section: "Rules",
-				old_text: '- **Don\'t ask clarifying questions when the directive is clear**: If the user gives a specific command, execute it.',
-				new_text: '- **Don\'t ask clarifying questions when the directive is clear**: If the user gives a specific command, execute it. Don\'t present multiple-choice options when a single obvious action exists.',
+				old_text:
+					"- **Don't ask clarifying questions when the directive is clear**: If the user gives a specific command, execute it.",
+				new_text:
+					"- **Don't ask clarifying questions when the directive is clear**: If the user gives a specific command, execute it. Don't present multiple-choice options when a single obvious action exists.",
 			},
 		];
 		const { result, applied, skipped } = applyEdits(SAMPLE_AGENTS_MD, edits);
@@ -74,13 +90,16 @@ describe("realistic LLM edit patterns", () => {
 	it("rejects an edit that would create duplication (old_text > 50 chars)", () => {
 		// Simulates an LLM that accidentally repeats the old content in the replacement
 		// The duplication check only triggers when old_text > 50 chars
-		const longRule = "- **ALWAYS read existing code before writing any code**. The #1 source of rework is acting before understanding.";
+		const longRule =
+			"- **ALWAYS read existing code before writing any code**. The #1 source of rework is acting before understanding.";
 		const content = `## Rules\n\n${longRule}\n- **Other rule**: Do Y.\n`;
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			old_text: longRule,
-			new_text: longRule + " " + longRule, // obvious duplication
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				old_text: longRule,
+				new_text: longRule + " " + longRule, // obvious duplication
+			},
+		];
 		const { applied, skipped } = applyEdits(content, edits);
 		assert.equal(applied, 0);
 		assert.equal(skipped.length, 1);
@@ -91,11 +110,13 @@ describe("realistic LLM edit patterns", () => {
 		// Short old_text bypasses the duplication check — this is expected behavior
 		// because short snippets appearing twice is less likely to be a real problem
 		const content = "## Rules\n\n- **Rule A**: Do X.\n- **Rule B**: Do Y.\n";
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			old_text: "- **Rule A**: Do X.",
-			new_text: "- **Rule A**: Do X. - **Rule A**: Do X.", // duplicated but short
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				old_text: "- **Rule A**: Do X.",
+				new_text: "- **Rule A**: Do X. - **Rule A**: Do X.", // duplicated but short
+			},
+		];
 		const { applied } = applyEdits(content, edits);
 		assert.equal(applied, 1); // passes because < 50 chars
 	});
@@ -108,22 +129,30 @@ describe("realistic LLM edit patterns", () => {
 			"- **Keep code DRY**: NEVER duplicate logic.",
 		].join("\n");
 
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			old_text: "- **NEVER push to main/master**: Pushing to main triggers production deployment.\n  Only the user pushes. Agents may commit on branches, build artifacts.",
-			new_text: "- **NEVER push to main/master**: Pushing to main triggers production deployment.\n  Only the user pushes. Agents may commit on branches, build artifacts.\n  Even if the user's instructions seem to imply pushing, stop and confirm first.",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				old_text:
+					"- **NEVER push to main/master**: Pushing to main triggers production deployment.\n  Only the user pushes. Agents may commit on branches, build artifacts.",
+				new_text:
+					"- **NEVER push to main/master**: Pushing to main triggers production deployment.\n  Only the user pushes. Agents may commit on branches, build artifacts.\n  Even if the user's instructions seem to imply pushing, stop and confirm first.",
+			},
+		];
 		const { result, applied } = applyEdits(content, edits);
 		assert.equal(applied, 1);
 		assert.ok(result.includes("stop and confirm first"));
 	});
 
 	it("preserves file structure when adding at the end of a section", () => {
-		const edits: AnalysisEdit[] = [{
-			type: "add",
-			after_text: "- **Deploy by pushing to main/master**: All deployments happen automatically via CI/CD.",
-			new_text: "- **Verify deployment completion**: After pushing, check logs to confirm the deploy succeeded.",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "add",
+				after_text:
+					"- **Deploy by pushing to main/master**: All deployments happen automatically via CI/CD.",
+				new_text:
+					"- **Verify deployment completion**: After pushing, check logs to confirm the deploy succeeded.",
+			},
+		];
 		const { result, applied } = applyEdits(SAMPLE_AGENTS_MD, edits);
 		assert.equal(applied, 1);
 		// The new rule should be the last line (after Deployment section's last rule)
@@ -131,14 +160,19 @@ describe("realistic LLM edit patterns", () => {
 	});
 
 	it("idempotent: running the same add edit twice fails on second run (dedup)", () => {
-		const edits: AnalysisEdit[] = [{
-			type: "add",
-			after_text: "- **Keep code DRY**: NEVER duplicate logic.",
-			new_text: "- **New rule**: Something new.",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "add",
+				after_text: "- **Keep code DRY**: NEVER duplicate logic.",
+				new_text: "- **New rule**: Something new.",
+			},
+		];
 
 		// First application
-		const { result: result1, applied: applied1 } = applyEdits(SAMPLE_AGENTS_MD, edits);
+		const { result: result1, applied: applied1 } = applyEdits(
+			SAMPLE_AGENTS_MD,
+			edits,
+		);
 		assert.equal(applied1, 1);
 
 		// Second application on the modified content
@@ -148,23 +182,31 @@ describe("realistic LLM edit patterns", () => {
 	});
 
 	it("handles edits with special markdown characters", () => {
-		const content = '- **Use `backticks` for code**: Always wrap code in backticks.\n- Other rule.';
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			old_text: '- **Use `backticks` for code**: Always wrap code in backticks.',
-			new_text: '- **Use `backticks` for code**: Always wrap code in backticks. Use triple backticks for multi-line blocks.',
-		}];
+		const content =
+			"- **Use `backticks` for code**: Always wrap code in backticks.\n- Other rule.";
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				old_text:
+					"- **Use `backticks` for code**: Always wrap code in backticks.",
+				new_text:
+					"- **Use `backticks` for code**: Always wrap code in backticks. Use triple backticks for multi-line blocks.",
+			},
+		];
 		const { applied } = applyEdits(content, edits);
 		assert.equal(applied, 1);
 	});
 
 	it("handles edits near markdown headers", () => {
-		const content = "## Section A\n\n- Rule under A.\n\n## Section B\n\n- Rule under B.";
-		const edits: AnalysisEdit[] = [{
-			type: "add",
-			after_text: "- Rule under A.",
-			new_text: "- New rule under A.",
-		}];
+		const content =
+			"## Section A\n\n- Rule under A.\n\n## Section B\n\n- Rule under B.";
+		const edits: AnalysisEdit[] = [
+			{
+				type: "add",
+				after_text: "- Rule under A.",
+				new_text: "- New rule under A.",
+			},
+		];
 		const { result, applied } = applyEdits(content, edits);
 		assert.equal(applied, 1);
 		// Verify the new rule is between Section A and Section B
@@ -177,12 +219,15 @@ describe("realistic LLM edit patterns", () => {
 describe("edge cases in edit content", () => {
 	it("handles old_text that is a substring of another rule", () => {
 		// Two rules where one is a prefix of the other
-		const content = "- **Rule**: Short.\n- **Rule**: Short. But also long with extra text.";
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			old_text: "- **Rule**: Short.",
-			new_text: "- **Rule**: Short, improved.",
-		}];
+		const content =
+			"- **Rule**: Short.\n- **Rule**: Short. But also long with extra text.";
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				old_text: "- **Rule**: Short.",
+				new_text: "- **Rule**: Short, improved.",
+			},
+		];
 		// "- **Rule**: Short." appears in both lines, so this should be ambiguous
 		const { applied, skipped } = applyEdits(content, edits);
 		assert.equal(applied, 0);
@@ -191,11 +236,13 @@ describe("edge cases in edit content", () => {
 
 	it("handles new_text with trailing newlines", () => {
 		const content = "- Rule A.\n- Rule B.";
-		const edits: AnalysisEdit[] = [{
-			type: "add",
-			after_text: "- Rule A.",
-			new_text: "- New rule.\n",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "add",
+				after_text: "- Rule A.",
+				new_text: "- New rule.\n",
+			},
+		];
 		const { result, applied } = applyEdits(content, edits);
 		assert.equal(applied, 1);
 		// Should not create triple newlines
@@ -204,11 +251,13 @@ describe("edge cases in edit content", () => {
 
 	it("handles unicode in edit text", () => {
 		const content = "- **Rule**: Use → arrows and • bullets.";
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			old_text: "- **Rule**: Use → arrows and • bullets.",
-			new_text: "- **Rule**: Use → arrows, • bullets, and — dashes.",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				old_text: "- **Rule**: Use → arrows and • bullets.",
+				new_text: "- **Rule**: Use → arrows, • bullets, and — dashes.",
+			},
+		];
 		const { applied } = applyEdits(content, edits);
 		assert.equal(applied, 1);
 	});
@@ -216,11 +265,13 @@ describe("edge cases in edit content", () => {
 	it("handles very long edit text (>1000 chars)", () => {
 		const longRule = "- **Long rule**: " + "word ".repeat(200);
 		const content = longRule + "\n- Short rule.";
-		const edits: AnalysisEdit[] = [{
-			type: "strengthen",
-			old_text: longRule,
-			new_text: longRule + " Plus more words at the end.",
-		}];
+		const edits: AnalysisEdit[] = [
+			{
+				type: "strengthen",
+				old_text: longRule,
+				new_text: longRule + " Plus more words at the end.",
+			},
+		];
 		const { applied } = applyEdits(content, edits);
 		assert.equal(applied, 1);
 	});

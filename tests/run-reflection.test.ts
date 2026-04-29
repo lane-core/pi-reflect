@@ -2,13 +2,13 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import {
-	DEFAULT_TARGET,
-	type NotifyFn,
-	type ReflectTarget,
-	type RunReflectionDeps,
-	runReflection,
-} from "../extensions/reflect.js";
+import { DEFAULT_TARGET } from "../src/config.js";
+import { runReflection } from "../src/reflect.js";
+import type {
+	NotifyFn,
+	ReflectTarget,
+	RunReflectionDeps,
+} from "../src/types.js";
 import { cleanup, makeTempDir, SAMPLE_AGENTS_MD } from "./helpers.js";
 
 let tmpDir: string;

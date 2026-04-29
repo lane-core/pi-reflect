@@ -1,12 +1,8 @@
-import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import {
-	resolvePath,
-	formatTimestamp,
-	escapeRegex,
-	truncateText,
-	projectNameFromDir,
-} from "../extensions/reflect.js";
+import { describe, it } from "node:test";
+import { escapeRegex } from "../src/apply.js";
+import { formatTimestamp, resolvePath } from "../src/config.js";
+import { projectNameFromDir, truncateText } from "../src/extract.js";
 
 describe("resolvePath", () => {
 	it("expands ~ to HOME", () => {

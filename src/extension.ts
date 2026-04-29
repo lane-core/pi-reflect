@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { registerCommands } from "./commands/index.js";
+import { registerCommands } from "./commands.js";
 
 export default function (pi: ExtensionAPI) {
 	let modelRegistryRef: any = null;

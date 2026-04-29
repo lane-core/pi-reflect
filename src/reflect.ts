@@ -1,25 +1,318 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ReflectTarget } from "../config/schema.js";
-import { applyEdits } from "../edit/engine.js";
-import { collectContext } from "../evidence/collector.js";
+import { applyEdits } from "./apply.js";
+import { DEFAULT_BACKUP_DIR, formatTimestamp, resolvePath } from "./config.js";
 import {
-	DEFAULT_BACKUP_DIR,
-	formatTimestamp,
-	resolvePath,
-} from "../paths/resolver.js";
-import {
+	collectContext,
 	collectTranscripts,
 	collectTranscriptsFromCommand,
-} from "../session/collector.js";
-import type { NotifyFn } from "../types.js";
-import { analyzeTranscriptBatch } from "./analyzer.js";
-import { buildTranscriptBatches, formatBatchTranscripts } from "./batcher.js";
+} from "./extract.js";
 import type {
+	AnalysisEdit,
+	AnalysisResult,
+	NotifyFn,
 	ReflectionOptions,
 	ReflectRun,
+	ReflectTarget,
 	RunReflectionDeps,
+	SessionData,
 } from "./types.js";
+
+export function buildReflectionPrompt(
+	targetPath: string,
+	targetContent: string,
+	transcripts: string,
+): string {
+	const fileName = path.basename(targetPath);
+	const charCount = targetContent.length;
+	const lineCount = targetContent.split("\n").length;
+	return `You are reviewing recent agent session transcripts to improve ${fileName}.
+
+## CRITICAL: Conciseness
+
+The target file is ${lineCount} lines / ${charCount} chars. Your #1 job is to keep it CONCISE.
+- Every rule should be 1-2 sentences max. If a rule is longer, condense it.
+- Remove session counts, escalating repetition tallies, and "this happened N times" histories — the rule itself is what matters, not how many times it was violated.
+- Remove verbose examples when the rule is self-explanatory.
+- Merge rules that say the same thing in different words.
+- Remove rules that are subsumed by other, better-worded rules.
+- A good rule file is SHORT and scannable. Walls of text get ignored by agents.
+
+## Input
+
+### Target file: ${fileName}
+<target_file>
+${targetContent}</target_file>
+
+### Session transcripts
+<transcripts>
+${transcripts}</transcripts>
+
+## Step 1: Identify Correction Patterns
+
+Read the transcripts for genuine corrections — user redirecting the agent, expressing frustration, repeating themselves, or correcting approach. Ignore normal flow ("no worries", "actually that looks good").
+
+For each correction: what the agent did wrong, what the user wanted, and which rule (if any) already covers it.
+
+## Step 2: Propose Edits (prioritize conciseness)
+
+Four edit types available:
+1. **strengthen**: Tighten an existing rule's wording (make it clearer/shorter, not longer).
+2. **add**: Add a new rule for a pattern with 2+ occurrences. Keep it to 1-2 sentences.
+3. **remove**: Delete a rule that is redundant (covered by another rule), obsolete, or overly verbose noise.
+4. **merge**: Consolidate 2+ rules that overlap into one concise rule.
+
+Guidelines:
+- Prefer strengthen/merge/remove over add. The file should get SHORTER or stay the same size, not grow.
+- When strengthening, make the rule SHORTER and CLEARER — don't add history or examples unless essential.
+- Strip "This happened in N sessions", "RECURRING", session dates, escalating violation counts. The rule text is enough.
+- Don't reorganize or restructure the file. Minimal, targeted edits only.
+- Don't add one-off rules. Only patterns with 2+ occurrences.
+
+## Step 3: Output
+
+IMPORTANT: Your ENTIRE response must be a single JSON object. No markdown, no preamble.
+
+For "strengthen": old_text = COMPLETE bullet/rule copied exactly. new_text = shorter/clearer replacement.
+For "add": after_text = COMPLETE bullet/line copied exactly. new_text = concise new bullet (1-2 sentences).
+For "remove": old_text = COMPLETE bullet/rule to delete. new_text = "" (empty string).
+For "merge": merge_sources = array of COMPLETE bullets to consolidate. new_text = single concise replacement. The merged text replaces the first source; others are removed.
+
+{
+  "corrections_found": <number>,
+  "sessions_with_corrections": <number>,
+  "edits": [
+    {
+      "type": "strengthen" | "add" | "remove" | "merge",
+      "section": "which section of the file",
+      "old_text": "exact text to find (strengthen/remove) or null (add/merge)",
+      "new_text": "replacement/new text, or empty string for remove",
+      "after_text": "insertion point (add only) or null",
+      "merge_sources": ["exact text 1", "exact text 2"] or null (merge only),
+      "reason": "brief reason for this edit"
+    }
+  ],
+  "patterns_not_added": [
+    { "pattern": "description", "reason": "why not added" }
+  ],
+  "summary": "2-3 sentence summary"
+}`;
+}
+
+export function buildPromptForTarget(
+	target: ReflectTarget,
+	targetPath: string,
+	targetContent: string,
+	transcripts: string,
+	context?: string,
+): string {
+	if (!target.prompt) {
+		return buildReflectionPrompt(targetPath, targetContent, transcripts);
+	}
+	const fileName = path.basename(targetPath);
+	return target.prompt
+		.replace(/\{fileName\}/g, fileName)
+		.replace(/\{targetContent\}/g, targetContent)
+		.replace(/\{transcripts\}/g, transcripts)
+		.replace(/\{context\}/g, context ?? "");
+}
+
+const ENTRY_SEPARATOR = "\n---\n\n";
+
+export function buildTranscriptBatches(
+	sessions: SessionData[],
+	maxBytes: number,
+): string[][] {
+	const batches: string[][] = [];
+	let currentBatch: string[] = [];
+	let currentSize = 0;
+
+	for (const sd of sessions) {
+		const entry = sd.transcript + ENTRY_SEPARATOR;
+		if (currentSize + entry.length > maxBytes && currentBatch.length > 0) {
+			batches.push(currentBatch);
+			currentBatch = [];
+			currentSize = 0;
+		}
+		currentBatch.push(entry);
+		currentSize += entry.length;
+	}
+	if (currentBatch.length > 0) {
+		batches.push(currentBatch);
+	}
+	return batches;
+}
+
+export function formatBatchTranscripts(
+	parts: string[],
+	batchIndex: number,
+	totalBatches: number,
+	totalSessions: number,
+): string {
+	const header =
+		`# Session Transcripts (batch ${batchIndex + 1}/${totalBatches})\n` +
+		`# ${parts.length} sessions in this batch, ${totalSessions} total\n\n`;
+	return header + parts.join("");
+}
+
+export async function analyzeTranscriptBatch(
+	target: ReflectTarget,
+	targetPath: string,
+	targetContent: string,
+	transcripts: string,
+	context: string,
+	model: any,
+	apiKey: string,
+	modelLabel: string,
+	notify: NotifyFn,
+	completeFn: (model: any, request: any, options: any) => Promise<any>,
+): Promise<AnalysisResult | null> {
+	const prompt = buildPromptForTarget(
+		target,
+		targetPath,
+		targetContent,
+		transcripts,
+		context,
+	);
+
+	const reflectAnalysisTool = {
+		name: "submit_analysis",
+		description: "Submit the reflection analysis results",
+		parameters: {
+			type: "object" as const,
+			properties: {
+				corrections_found: {
+					type: "number",
+					description: "Number of facts/rules added, updated, or removed",
+				},
+				sessions_with_corrections: {
+					type: "number",
+					description:
+						"Number of conversations containing new facts or corrections",
+				},
+				edits: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: {
+							type: {
+								type: "string",
+								enum: ["strengthen", "add", "remove", "merge"],
+								description:
+									"strengthen = update existing text, add = insert new text, remove = delete redundant text, merge = consolidate multiple rules into one",
+							},
+							section: {
+								type: "string",
+								description: "Which section of the file",
+							},
+							old_text: {
+								type: ["string", "null"],
+								description:
+									"Exact text to find (for strengthen) or null (for add)",
+							},
+							new_text: {
+								type: "string",
+								description:
+									"Replacement text (for strengthen) or new text to insert (for add)",
+							},
+							after_text: {
+								type: ["string", "null"],
+								description: "Text after which to insert (for add) or null",
+							},
+							merge_sources: {
+								type: ["array", "null"],
+								items: { type: "string" },
+								description:
+									"For merge: array of exact text strings to consolidate",
+							},
+							reason: {
+								type: "string",
+								description: "Brief reason for this edit",
+							},
+						},
+						required: ["type", "new_text"],
+					},
+				},
+				patterns_not_added: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: {
+							pattern: { type: "string" },
+							reason: { type: "string" },
+						},
+					},
+				},
+				summary: {
+					type: "string",
+					description: "2-3 sentence summary of what was added/updated",
+				},
+			},
+			required: [
+				"corrections_found",
+				"sessions_with_corrections",
+				"edits",
+				"summary",
+			],
+		},
+	};
+
+	const response = await completeFn(
+		model,
+		{
+			systemPrompt:
+				"You are a behavioral analysis tool that prioritizes CONCISENESS. Your goal is to keep the target file short and scannable — prefer merging, removing, and tightening rules over adding new ones. The file should get shorter or stay the same size, not grow. Analyze the session transcripts and call the submit_analysis tool with your results. Always call the tool — never respond with plain text.",
+			messages: [
+				{
+					role: "user" as const,
+					content: [{ type: "text" as const, text: prompt }],
+					timestamp: Date.now(),
+				},
+			],
+			tools: [reflectAnalysisTool],
+		},
+		{ apiKey, maxTokens: 16384 },
+	);
+
+	if (response.stopReason === "error") {
+		notify(`LLM error: ${response.errorMessage ?? "unknown"}`, "error");
+		return null;
+	}
+
+	let analysis: any;
+	const toolCall = response.content.find(
+		(c: any) => c.type === "toolCall" && c.name === "submit_analysis",
+	);
+	if (toolCall && (toolCall as any).arguments) {
+		analysis = (toolCall as any).arguments;
+	} else {
+		const responseText = response.content
+			.filter((c: any) => c.type === "text")
+			.map((c: any) => c.text)
+			.join("")
+			.trim();
+		try {
+			const jsonStr = responseText
+				.replace(/^```json?\s*\n?/m, "")
+				.replace(/\n?```\s*$/m, "");
+			analysis = JSON.parse(jsonStr);
+		} catch {
+			notify(
+				`Failed to parse LLM response as JSON. Raw response:\n${responseText.slice(0, 500)}`,
+				"error",
+			);
+			return null;
+		}
+	}
+
+	return {
+		edits: analysis.edits ?? [],
+		correctionsFound: analysis.corrections_found ?? 0,
+		sessionsWithCorrections: analysis.sessions_with_corrections ?? 0,
+		summary: analysis.summary ?? "",
+		patternsNotAdded: analysis.patterns_not_added,
+	};
+}
 
 function computeFileMetrics(content: string): {
 	chars: number;
@@ -61,7 +354,7 @@ export async function runReflection(
 	let transcripts: string;
 	let sessionCount = 0;
 	let includedCount = 0;
-	let allSessions: import("../session/types.js").SessionData[] | undefined;
+	let allSessions: SessionData[] | undefined;
 
 	if (options?.transcriptsOverride) {
 		({ transcripts, sessionCount, includedCount } =
@@ -177,7 +470,7 @@ export async function runReflection(
 	const needsBatching =
 		allSessions && allSessions.length > 0 && totalBytes > batchBudget;
 
-	let allEdits: import("../edit/types.js").AnalysisEdit[] = [];
+	let allEdits: AnalysisEdit[] = [];
 	let totalCorrectionsFound = 0;
 	const allSummaries: string[] = [];
 
@@ -387,7 +680,7 @@ export async function runReflection(
 		const realPath = fs.realpathSync(targetPath);
 		const repoDir = path.dirname(realPath);
 		if (fs.existsSync(path.join(repoDir, ".git"))) {
-			const { execFileSync } = require("node:child_process");
+			const { execFileSync } = await import("node:child_process");
 			execFileSync("git", ["add", "-A"], {
 				cwd: repoDir,
 				stdio: "ignore",
