@@ -34,7 +34,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, jsonl);
 
-		const { exchanges } = await extractTranscript(fp);
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		const { exchanges } = result.value;
 		assert.equal(exchanges.length, 2);
 		assert.equal(exchanges[0].role, "user");
 		assert.equal(exchanges[0].text, "Hello");
@@ -54,7 +56,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, jsonl);
 
-		const { exchanges } = await extractTranscript(fp);
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		const { exchanges } = result.value;
 		assert.equal(exchanges.length, 2);
 		assert.equal(exchanges[1].thinking, "Let me think about this...");
 		assert.equal(exchanges[1].text, "Here is the answer");
@@ -76,8 +80,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 2);
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 2);
 	});
 
 	it("skips system and tool roles", async () => {
@@ -107,9 +112,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 1);
-		assert.equal(exchanges[0].role, "user");
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 1);
+		assert.equal(result.value.exchanges[0].role, "user");
 	});
 
 	it("skips messages with empty/whitespace-only text", async () => {
@@ -133,9 +139,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 1);
-		assert.equal(exchanges[0].text, "Real message");
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 1);
+		assert.equal(result.value.exchanges[0].text, "Real message");
 	});
 
 	it("handles malformed JSON lines gracefully", async () => {
@@ -152,7 +159,9 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges, parseFailures } = await extractTranscript(fp);
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		const { exchanges, parseFailures } = result.value;
 		assert.equal(exchanges.length, 1);
 		assert.equal(exchanges[0].text, "Valid");
 		assert.equal(parseFailures, 4);
@@ -175,9 +184,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 1);
-		assert.equal(exchanges[0].text, "Array content");
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 1);
+		assert.equal(result.value.exchanges[0].text, "Array content");
 	});
 
 	it("handles missing message field", async () => {
@@ -192,16 +202,15 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 1);
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 1);
 	});
 
-	it("returns empty array for nonexistent file", async () => {
-		const { exchanges, parseFailures } = await extractTranscript(
-			"/nonexistent/path/file.jsonl",
-		);
-		assert.deepEqual(exchanges, []);
-		assert.equal(parseFailures, 0);
+	it("returns error for nonexistent file", async () => {
+		const result = await extractTranscript("/nonexistent/path/file.jsonl");
+		assert.ok(result.isErr());
+		assert.equal(result.error.name, "SessionReadError");
 	});
 
 	it("joins multiple text parts in same message", async () => {
@@ -220,9 +229,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 1);
-		assert.equal(exchanges[0].text, "Part one\nPart two");
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 1);
+		assert.equal(result.value.exchanges[0].text, "Part one\nPart two");
 	});
 
 	it("handles thinking-only assistant messages (no text)", async () => {
@@ -232,10 +242,14 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, jsonl);
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 1);
-		assert.equal(exchanges[0].text, null);
-		assert.equal(exchanges[0].thinking, "Just thinking, no text output");
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 1);
+		assert.equal(result.value.exchanges[0].text, null);
+		assert.equal(
+			result.value.exchanges[0].thinking,
+			"Just thinking, no text output",
+		);
 	});
 
 	it("skips content parts that are null or non-objects", async () => {
@@ -251,9 +265,10 @@ describe("extractTranscript", () => {
 		const fp = path.join(tmpDir, "session.jsonl");
 		fs.writeFileSync(fp, lines.join("\n") + "\n");
 
-		const { exchanges } = await extractTranscript(fp);
-		assert.equal(exchanges.length, 1);
-		assert.equal(exchanges[0].text, "Valid part");
+		const result = await extractTranscript(fp);
+		assert.ok(result.isOk());
+		assert.equal(result.value.exchanges.length, 1);
+		assert.equal(result.value.exchanges[0].text, "Valid part");
 	});
 });
 
@@ -328,10 +343,11 @@ describe("collectTranscripts", () => {
 		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
-		assert.equal(result.sessionCount, 1);
-		assert.equal(result.includedCount, 1);
-		assert.ok(result.transcripts.includes("Fix the bug"));
-		assert.ok(result.transcripts.includes("wrong file"));
+		assert.ok(result.isOk());
+		assert.equal(result.value.sessionCount, 1);
+		assert.equal(result.value.includedCount, 1);
+		assert.ok(result.value.transcripts.includes("Fix the bug"));
+		assert.ok(result.value.transcripts.includes("wrong file"));
 	});
 
 	it("ignores sessions from wrong dates", async () => {
@@ -355,7 +371,8 @@ describe("collectTranscripts", () => {
 		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
-		assert.equal(result.includedCount, 0);
+		assert.ok(result.isOk());
+		assert.equal(result.value.includedCount, 0);
 	});
 
 	it("skips sessions with fewer than 3 exchanges", async () => {
@@ -375,9 +392,10 @@ describe("collectTranscripts", () => {
 		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
+		assert.ok(result.isOk());
 		// Scanned but not included
-		assert.equal(result.sessionCount, 1);
-		assert.equal(result.includedCount, 0);
+		assert.equal(result.value.sessionCount, 1);
+		assert.equal(result.value.includedCount, 0);
 	});
 
 	it("skips sessions with 0 user messages", async () => {
@@ -399,7 +417,8 @@ describe("collectTranscripts", () => {
 		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
-		assert.equal(result.includedCount, 0);
+		assert.ok(result.isOk());
+		assert.equal(result.value.includedCount, 0);
 	});
 
 	it("respects maxBytes budget", async () => {
@@ -433,9 +452,10 @@ describe("collectTranscripts", () => {
 
 		// Very small budget — should only include one session
 		const result = await collectTranscripts(1, 500, sessionsDir);
+		assert.ok(result.isOk());
 		assert.ok(
-			result.includedCount <= 1,
-			`Expected at most 1 included, got ${result.includedCount}`,
+			result.value.includedCount <= 1,
+			`Expected at most 1 included, got ${result.value.includedCount}`,
 		);
 	});
 
@@ -458,18 +478,18 @@ describe("collectTranscripts", () => {
 		);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
-		assert.equal(result.includedCount, 0);
+		assert.ok(result.isOk());
+		assert.equal(result.value.includedCount, 0);
 	});
 
-	it("returns empty for nonexistent sessions directory", async () => {
+	it("returns error for nonexistent sessions directory", async () => {
 		const result = await collectTranscripts(
 			1,
 			1024 * 1024,
 			"/nonexistent/sessions",
 		);
-		assert.equal(result.transcripts, "");
-		assert.equal(result.sessionCount, 0);
-		assert.equal(result.includedCount, 0);
+		assert.ok(result.isErr());
+		assert.equal(result.error.name, "DirectoryScanError");
 	});
 
 	it("prioritizes sessions by interaction density", async () => {
@@ -506,10 +526,11 @@ describe("collectTranscripts", () => {
 		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
-		assert.equal(result.includedCount, 2);
+		assert.ok(result.isOk());
+		assert.equal(result.value.includedCount, 2);
 		// High density should come first in the output
-		const highIdx = result.transcripts.indexOf("HIGH_DENSITY_MARKER");
-		const lowIdx = result.transcripts.indexOf("LOW_DENSITY_MARKER");
+		const highIdx = result.value.transcripts.indexOf("HIGH_DENSITY_MARKER");
+		const lowIdx = result.value.transcripts.indexOf("LOW_DENSITY_MARKER");
 		assert.ok(
 			highIdx < lowIdx,
 			"High-density session should appear before low-density",
@@ -535,9 +556,10 @@ describe("collectTranscripts", () => {
 		]);
 
 		const result = await collectTranscripts(1, 1024 * 1024, sessionsDir);
-		assert.ok(result.transcripts.startsWith("# Session Transcripts\n"));
-		assert.ok(result.transcripts.includes("Sessions scanned: 1"));
-		assert.ok(result.transcripts.includes("1 included"));
+		assert.ok(result.isOk());
+		assert.ok(result.value.transcripts.startsWith("# Session Transcripts\n"));
+		assert.ok(result.value.transcripts.includes("Sessions scanned: 1"));
+		assert.ok(result.value.transcripts.includes("1 included"));
 	});
 
 	it("handles lookbackDays > 1", async () => {
@@ -560,10 +582,12 @@ describe("collectTranscripts", () => {
 
 		// lookbackDays=1 should miss it
 		const result1 = await collectTranscripts(1, 1024 * 1024, sessionsDir);
-		assert.equal(result1.includedCount, 0);
+		assert.ok(result1.isOk());
+		assert.equal(result1.value.includedCount, 0);
 
 		// lookbackDays=3 should find it
 		const result3 = await collectTranscripts(3, 1024 * 1024, sessionsDir);
-		assert.equal(result3.includedCount, 1);
+		assert.ok(result3.isOk());
+		assert.equal(result3.value.includedCount, 1);
 	});
 });

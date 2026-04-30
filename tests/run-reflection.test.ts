@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { ok } from "neverthrow";
 import { DEFAULT_TARGET } from "../src/config.js";
 import { runReflection } from "../src/reflect.js";
 import type {
@@ -53,14 +54,16 @@ function makeDeps(
 ): RunReflectionDeps {
 	return {
 		completeSimple: async () => ({
-			content: [{ type: "text", text: llmResponseJson }],
+			stopReason: "stop" as const,
+			content: [{ type: "text" as const, text: llmResponseJson }],
 		}),
 		getModel: () => ({ provider: "test", id: "test-model" }),
-		collectTranscriptsFn: async () => ({
-			transcripts,
-			sessionCount: 10,
-			includedCount: 5,
-		}),
+		collectTranscriptsFn: async () =>
+			ok({
+				transcripts,
+				sessionCount: 10,
+				includedCount: 5,
+			}),
 	};
 }
 
@@ -112,11 +115,12 @@ describe("runReflection", () => {
 		const target = makeTarget({ path: fp });
 		const deps: RunReflectionDeps = {
 			...makeDeps("{}"),
-			collectTranscriptsFn: async () => ({
-				transcripts: "",
-				sessionCount: 5,
-				includedCount: 0,
-			}),
+			collectTranscriptsFn: async () =>
+				ok({
+					transcripts: "",
+					sessionCount: 5,
+					includedCount: 0,
+				}),
 		};
 		const result = await runReflection(
 			target,
@@ -270,8 +274,12 @@ describe("runReflection", () => {
 		const deps: RunReflectionDeps = {
 			...makeDeps("{}"),
 			completeSimple: async () => ({
+				stopReason: "stop" as const,
 				content: [
-					{ type: "text", text: "This is not JSON at all, just plain text." },
+					{
+						type: "text" as const,
+						text: "This is not JSON at all, just plain text.",
+					},
 				],
 			}),
 		};
@@ -304,7 +312,10 @@ describe("runReflection", () => {
 		const deps: RunReflectionDeps = {
 			...makeDeps("{}"),
 			completeSimple: async () => ({
-				content: [{ type: "text", text: "```json\n" + jsonStr + "\n```" }],
+				stopReason: "stop" as const,
+				content: [
+					{ type: "text" as const, text: "```json\n" + jsonStr + "\n```" },
+				],
 			}),
 		};
 		const result = await runReflection(
@@ -331,19 +342,20 @@ describe("runReflection", () => {
 		let commandCalledWith = "";
 		const deps: RunReflectionDeps = {
 			...makeDeps("{}"),
-			collectTranscriptsFromCommandFn: async (cmd, days, max) => {
+			collectTranscriptsFromCommandFn: async (cmd, _days, _max) => {
 				commandCalledWith = cmd;
-				return {
+				return ok({
 					transcripts: "### Session: cmd test\n\n**USER:** test\n",
 					sessionCount: 1,
 					includedCount: 1,
-				};
+				});
 			},
 		};
 
 		const llmResponse = makeLlmResponse([], 0, "No issues.");
 		deps.completeSimple = async () => ({
-			content: [{ type: "text", text: llmResponse }],
+			stopReason: "stop" as const,
+			content: [{ type: "text" as const, text: llmResponse }],
 		});
 
 		await runReflection(target, makeModelRegistry(), notify, deps);

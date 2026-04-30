@@ -42,7 +42,7 @@ export interface TranscriptResult {
 	transcripts: string;
 	sessionCount: number;
 	includedCount: number;
-	sessions?: SessionData[];
+	sessions?: readonly SessionData[];
 }
 
 export interface TranscriptSource {
@@ -53,7 +53,7 @@ export interface TranscriptSource {
 export interface ContextSource {
 	type: "files" | "command" | "url";
 	label?: string;
-	paths?: string[];
+	paths?: readonly string[];
 	command?: string;
 	url?: string;
 	maxBytes?: number;
@@ -67,17 +67,17 @@ export interface ReflectTarget {
 	maxSessionBytes: number;
 	backupDir: string;
 	transcriptSource?: TranscriptSource;
-	transcripts?: ContextSource[];
+	transcripts?: readonly ContextSource[];
 	prompt?: string;
-	context?: ContextSource[];
+	context?: readonly ContextSource[];
 }
 
 export interface ReflectConfig {
-	targets: ReflectTarget[];
+	targets: readonly ReflectTarget[];
 }
 
 export interface AnalysisResult {
-	edits: AnalysisEdit[];
+	edits: readonly AnalysisEdit[];
 	correctionsFound: number;
 	sessionsWithCorrections: number;
 	summary: string;
@@ -92,23 +92,68 @@ export interface ReflectionOptions {
 	currentModelApiKey?: string;
 }
 
+export interface LLMTextContent {
+	type: "text";
+	text: string;
+}
+
+export interface LLMToolCallContent {
+	type: "toolCall";
+	name: string;
+	arguments: unknown;
+}
+
+export type LLMContent = LLMTextContent | LLMToolCallContent;
+
+export interface LLMMessage {
+	role: "user" | "assistant" | "system";
+	content: LLMContent[];
+	timestamp?: number;
+}
+
+export interface LLMRequest {
+	systemPrompt?: string;
+	messages: LLMMessage[];
+	tools?: unknown[];
+}
+
+export interface LLMOptions {
+	apiKey: string;
+	maxTokens?: number;
+}
+
+export interface LLMResponse {
+	stopReason: string;
+	errorMessage?: string;
+	content: LLMContent[];
+}
+
+export type CompleteFn = (
+	model: unknown,
+	request: LLMRequest,
+	options: LLMOptions,
+) => Promise<LLMResponse>;
+
+import type { Result } from "neverthrow";
+import type {
+	CommandError,
+	DirectoryScanError,
+	SessionReadError,
+} from "./errors.js";
+
 export interface RunReflectionDeps {
-	completeSimple: (
-		model: unknown,
-		request: unknown,
-		options: unknown,
-	) => Promise<unknown>;
+	completeSimple: CompleteFn;
 	getModel: (provider: string, modelId: string) => unknown;
 	collectTranscriptsFn?: (
 		lookbackDays: number,
 		maxBytes: number,
 		sessionsDir?: string,
-	) => Promise<TranscriptResult>;
+	) => Promise<Result<TranscriptResult, DirectoryScanError | SessionReadError>>;
 	collectTranscriptsFromCommandFn?: (
 		command: string,
 		lookbackDays: number,
 		maxBytes: number,
-	) => Promise<TranscriptResult>;
+	) => Promise<Result<TranscriptResult, CommandError>>;
 }
 
 export interface ReflectRun {
@@ -120,7 +165,7 @@ export interface ReflectRun {
 	summary: string;
 	diffLines: number;
 	correctionRate: number;
-	edits?: EditRecord[];
+	edits?: readonly EditRecord[];
 	sourceDate?: string;
 	date?: string;
 	fileSize?: {

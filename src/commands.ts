@@ -1,6 +1,7 @@
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { err, ok, type Result } from "neverthrow";
 import {
 	CONFIG_FILE,
 	computeFileMetrics,
@@ -11,6 +12,7 @@ import {
 	saveConfig,
 	saveHistory,
 } from "./config.js";
+import { FileAccessError } from "./errors.js";
 import {
 	collectTranscriptsForDate,
 	getAvailableSessionDates,
@@ -22,6 +24,10 @@ import type {
 	ReflectRun,
 	ReflectTarget,
 } from "./types.js";
+
+function headlessNotify(msg: string, level = "info"): void {
+	console.log(`[reflect] [${level}] ${msg}`);
+}
 
 export function targetLabel(filePath: string): string {
 	const dir = path.basename(path.dirname(filePath));
@@ -69,8 +75,11 @@ export function registerReflectCommand(
 							`Save ${filePath} as a reflection target for next time?`,
 						);
 						if (save) {
-							config.targets.push(target);
-							saveConfig(config).match(
+							const updatedConfig: ReflectConfig = {
+								...config,
+								targets: [...config.targets, target],
+							};
+							saveConfig(updatedConfig).match(
 								() => ctx.ui.notify("Saved to reflect.json", "info"),
 								(err) =>
 									ctx.ui.notify(
@@ -80,7 +89,10 @@ export function registerReflectCommand(
 							);
 						}
 					} else {
-						console.error("No targets configured. Use: /reflect <path>");
+						headlessNotify(
+							"No targets configured. Use: /reflect <path>",
+							"error",
+						);
 						return;
 					}
 				} else if (config.targets.length === 1) {
@@ -103,12 +115,16 @@ export function registerReflectCommand(
 
 			const notify: NotifyFn = ctx.hasUI
 				? (msg, level) => ctx.ui.notify(msg, level)
-				: (msg, level) => console.log(`[reflect] [${level}] ${msg}`);
+				: headlessNotify;
 
 			let currentModel: unknown;
 			let currentModelApiKey: string | undefined;
-			if (ctx.model) {
-				const key = await ctx.modelRegistry.getApiKey(ctx.model);
+			if (ctx.model && modelRegistryRef) {
+				const key = await (
+					modelRegistryRef as {
+						getApiKey?: (m: unknown) => Promise<string | null>;
+					}
+				)?.getApiKey?.(ctx.model);
 				if (key) {
 					currentModel = ctx.model;
 					currentModelApiKey = key;
@@ -150,7 +166,7 @@ export function registerConfigCommand(pi: ExtensionAPI) {
 			const config = loadConfig().unwrapOr({ targets: [] });
 
 			if (!ctx.hasUI) {
-				console.log(JSON.stringify(config, null, 2));
+				headlessNotify(JSON.stringify(config, null, 2), "info");
 				return;
 			}
 
@@ -200,17 +216,254 @@ export function registerHistoryCommand(pi: ExtensionAPI) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(`Recent reflections:\n${lines.join("\n")}`, "info");
 			} else {
-				console.log(lines.join("\n"));
+				headlessNotify(lines.join("\n"), "info");
 			}
 		},
 	});
+}
+
+function getRunDate(r: ReflectRun): string {
+	return (
+		r.sourceDate ??
+		((r as unknown as Record<string, unknown>).date as string) ??
+		r.timestamp.slice(0, 10)
+	);
+}
+
+interface TargetStatsReport {
+	targetPath: string;
+	fileName: string;
+	currentSize?: ReturnType<typeof computeFileMetrics>;
+	sizeTrendEntries: Array<{
+		date: string;
+		sz: NonNullable<ReflectRun["fileSize"]>;
+	}>;
+	correctionRateEntries: Array<{
+		date: string;
+		rate: number;
+		corrections: number;
+		sessions: number;
+	}>;
+	sectionCounts: Map<
+		string,
+		{ count: number; types: string[]; reasons: string[]; dates: string[] }
+	>;
+}
+
+async function computeTargetStats(
+	targetPath: string,
+	runs: ReflectRun[],
+): Promise<Result<TargetStatsReport, FileAccessError>> {
+	const fileName = targetLabel(targetPath);
+	const resolvedPath = resolvePath(targetPath);
+	let currentSize: ReturnType<typeof computeFileMetrics> | undefined;
+	try {
+		const content = await fs.readFile(resolvedPath, "utf-8");
+		currentSize = computeFileMetrics(content);
+	} catch (e) {
+		return err(
+			new FileAccessError(
+				`Failed to read target file for stats: ${resolvedPath}`,
+				resolvedPath,
+				e,
+			),
+		);
+	}
+
+	const sizeTrendEntries = runs
+		.filter((r) => r.fileSize != null)
+		.sort((a, b) => getRunDate(a).localeCompare(getRunDate(b)))
+		.map((r) => ({ date: getRunDate(r), sz: r.fileSize! }));
+
+	const correctionRateEntries = runs
+		.map((r) => ({
+			date: getRunDate(r),
+			rate:
+				r.correctionRate ??
+				(r.sessionsAnalyzed > 0 ? r.correctionsFound / r.sessionsAnalyzed : 0),
+			corrections: r.correctionsFound,
+			sessions: r.sessionsAnalyzed,
+		}))
+		.sort((a, b) => a.date.localeCompare(b.date));
+
+	const sectionCounts = new Map<
+		string,
+		{ count: number; types: string[]; reasons: string[]; dates: string[] }
+	>();
+
+	for (const run of runs) {
+		if (!run.edits) continue;
+		for (const edit of run.edits) {
+			const key = edit.section.toLowerCase().trim();
+			const existing = sectionCounts.get(key) ?? {
+				count: 0,
+				types: [],
+				reasons: [],
+				dates: [],
+			};
+			existing.count++;
+			existing.types.push(edit.type);
+			existing.reasons.push(edit.reason);
+			existing.dates.push(getRunDate(run));
+			sectionCounts.set(key, existing);
+		}
+	}
+
+	return ok({
+		targetPath,
+		fileName,
+		currentSize,
+		sizeTrendEntries,
+		correctionRateEntries,
+		sectionCounts,
+	});
+}
+
+function formatTargetStats(report: TargetStatsReport): string[] {
+	const output: string[] = [];
+	output.push(`# ${report.fileName}`);
+	output.push(`_${report.targetPath}_`);
+	output.push("");
+
+	if (report.currentSize) {
+		const c = report.currentSize;
+		output.push(`### Current Size`);
+		output.push(
+			`${c.chars.toLocaleString()} chars · ${c.words.toLocaleString()} words · ${c.lines.toLocaleString()} lines · ~${c.estTokens.toLocaleString()} tokens`,
+		);
+		output.push("");
+	}
+
+	if (report.sizeTrendEntries.length >= 2) {
+		output.push("### File Size Trend");
+		output.push("");
+		for (const e of report.sizeTrendEntries) {
+			const bar = "\u2588".repeat(Math.round(e.sz.estTokens / 1000));
+			output.push(
+				`${e.date}  ${e.sz.chars.toLocaleString().padStart(7)} chars  ${e.sz.words.toLocaleString().padStart(6)} words  ~${e.sz.estTokens.toLocaleString().padStart(6)} tok  ${bar}`,
+			);
+		}
+
+		const first = report.sizeTrendEntries[0].sz;
+		const last = report.sizeTrendEntries[report.sizeTrendEntries.length - 1].sz;
+		const charDelta = last.chars - first.chars;
+		const pct =
+			first.chars > 0 ? ((charDelta / first.chars) * 100).toFixed(0) : "N/A";
+		output.push("");
+		if (charDelta > 0) {
+			output.push(
+				`Trend: \u2191 grew ${charDelta.toLocaleString()} chars (+${pct}%) over ${report.sizeTrendEntries.length} runs`,
+			);
+		} else if (charDelta < 0) {
+			output.push(
+				`Trend: \u2193 shrank ${Math.abs(charDelta).toLocaleString()} chars (${pct}%) over ${report.sizeTrendEntries.length} runs`,
+			);
+		} else {
+			output.push(`Trend: \u2194 unchanged`);
+		}
+		output.push("");
+	}
+
+	output.push("### Correction Rate (corrections per session)");
+	output.push("");
+
+	for (const r of report.correctionRateEntries) {
+		const bar = "\u2588".repeat(Math.round(r.rate * 10));
+		const rateStr = r.rate.toFixed(2);
+		output.push(
+			`${r.date}  ${rateStr}  ${bar}  (${r.corrections}/${r.sessions} sessions)`,
+		);
+	}
+
+	if (report.correctionRateEntries.length >= 3) {
+		const firstHalf = report.correctionRateEntries.slice(
+			0,
+			Math.floor(report.correctionRateEntries.length / 2),
+		);
+		const secondHalf = report.correctionRateEntries.slice(
+			Math.floor(report.correctionRateEntries.length / 2),
+		);
+		const avgFirst =
+			firstHalf.reduce((s, r) => s + r.rate, 0) / firstHalf.length;
+		const avgSecond =
+			secondHalf.reduce((s, r) => s + r.rate, 0) / secondHalf.length;
+		const delta = avgSecond - avgFirst;
+		const pct =
+			avgFirst > 0 ? Math.abs((delta / avgFirst) * 100).toFixed(0) : "N/A";
+
+		output.push("");
+		if (delta < -0.01) {
+			output.push(
+				`Trend: \u2193 improving (${pct}% fewer corrections per session)`,
+			);
+		} else if (delta > 0.01) {
+			output.push(
+				`Trend: \u2191 worsening (${pct}% more corrections per session)`,
+			);
+		} else {
+			output.push(`Trend: \u2194 flat`);
+		}
+	}
+
+	output.push("");
+	output.push("### Rule Recidivism (sections edited multiple times)");
+	output.push("");
+
+	if (report.sectionCounts.size === 0) {
+		output.push("No per-edit data yet. Run /reflect to start collecting.");
+	} else {
+		const sorted = [...report.sectionCounts.entries()].sort(
+			(a, b) => b[1].count - a[1].count,
+		);
+		const recidivists = sorted.filter(([, v]) => v.count >= 2);
+		const resolved = sorted.filter(([, v]) => v.count === 1);
+
+		if (recidivists.length > 0) {
+			output.push("**Recurring (not sticking):**");
+			for (const [section, data] of recidivists) {
+				const strengthened = data.types.filter(
+					(t) => t === "strengthen",
+				).length;
+				const added = data.types.filter((t) => t === "add").length;
+				const dateRange = `${data.dates[0]} \u2192 ${data.dates[data.dates.length - 1]}`;
+				output.push(
+					`- **${section}** \u00d7${data.count} (${strengthened} strengthen, ${added} add) [${dateRange}]`,
+				);
+				const lastReason = data.reasons[data.reasons.length - 1];
+				if (lastReason) {
+					output.push(
+						`  Last: ${lastReason.length > 120 ? lastReason.slice(0, 120) + "..." : lastReason}`,
+					);
+				}
+			}
+		} else {
+			output.push(
+				"**No recurring violations.** All rules stuck after first edit.",
+			);
+		}
+
+		if (resolved.length > 0) {
+			output.push("");
+			output.push(
+				`**Resolved (edited once, not repeated):** ${resolved.length} rule(s)`,
+			);
+			for (const [section] of resolved.slice(0, 5)) {
+				output.push(`- ${section}`);
+			}
+			if (resolved.length > 5) {
+				output.push(`  ...and ${resolved.length - 5} more`);
+			}
+		}
+	}
+
+	return output;
 }
 
 export function registerStatsCommand(pi: ExtensionAPI) {
 	pi.registerCommand("reflect-stats", {
 		description:
 			"Show reflection impact metrics: correction rate trend and rule recidivism, grouped by target file",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			const history = loadHistory().unwrapOr([]);
 
 			if (history.length < 2) {
@@ -219,17 +472,9 @@ export function registerStatsCommand(pi: ExtensionAPI) {
 				if (ctx.hasUI) {
 					ctx.ui.notify(msg, "info");
 				} else {
-					console.log(msg);
+					headlessNotify(msg, "info");
 				}
 				return;
-			}
-
-			function getDate(r: ReflectRun): string {
-				return (
-					r.sourceDate ??
-					((r as unknown as Record<string, unknown>).date as string) ??
-					r.timestamp.slice(0, 10)
-				);
 			}
 
 			const byTarget = new Map<string, ReflectRun[]>();
@@ -265,197 +510,17 @@ export function registerStatsCommand(pi: ExtensionAPI) {
 			let targetIdx = 0;
 
 			for (const [targetPath, runs] of byTarget) {
-				const fileName = targetLabel(targetPath);
 				if (targetIdx > 0) output.push("", "---", "");
-				output.push(`# ${fileName}`);
-				output.push(`_${targetPath}_`);
-				output.push("");
-
-				const resolvedPath = resolvePath(targetPath);
-				if (fs.existsSync(resolvedPath)) {
-					const current = computeFileMetrics(
-						fs.readFileSync(resolvedPath, "utf-8"),
-					);
-					output.push(`### Current Size`);
-					output.push(
-						`${current.chars.toLocaleString()} chars · ${current.words.toLocaleString()} words · ${current.lines.toLocaleString()} lines · ~${current.estTokens.toLocaleString()} tokens`,
-					);
-					output.push("");
+				const statsResult = await computeTargetStats(targetPath, runs);
+				if (statsResult.isErr()) {
+					const notify = ctx.hasUI
+						? (msg: string, level: "info" | "warning" | "error") =>
+								ctx.ui.notify(msg, level)
+						: headlessNotify;
+					notify(statsResult.error.message, "error");
+					continue;
 				}
-
-				const runsWithSize = runs
-					.filter((r) => r.fileSize)
-					.sort((a, b) => getDate(a).localeCompare(getDate(b)));
-				if (runsWithSize.length >= 2) {
-					output.push("### File Size Trend");
-					output.push("");
-					for (const r of runsWithSize) {
-						const sz = r.fileSize!;
-						const date = getDate(r);
-						const bar = "\u2588".repeat(Math.round(sz.estTokens / 1000));
-						output.push(
-							`${date}  ${sz.chars.toLocaleString().padStart(7)} chars  ${sz.words.toLocaleString().padStart(6)} words  ~${sz.estTokens.toLocaleString().padStart(6)} tok  ${bar}`,
-						);
-					}
-
-					const first = runsWithSize[0].fileSize!;
-					const last = runsWithSize[runsWithSize.length - 1].fileSize!;
-					const charDelta = last.chars - first.chars;
-					const pct =
-						first.chars > 0
-							? ((charDelta / first.chars) * 100).toFixed(0)
-							: "N/A";
-					output.push("");
-					if (charDelta > 0) {
-						output.push(
-							`Trend: \u2191 grew ${charDelta.toLocaleString()} chars (+${pct}%) over ${runsWithSize.length} runs`,
-						);
-					} else if (charDelta < 0) {
-						output.push(
-							`Trend: \u2193 shrank ${Math.abs(charDelta).toLocaleString()} chars (${pct}%) over ${runsWithSize.length} runs`,
-						);
-					} else {
-						output.push(`Trend: \u2194 unchanged`);
-					}
-					output.push("");
-				}
-
-				output.push("### Correction Rate (corrections per session)");
-				output.push("");
-
-				const ratesWithDates = runs.map((r) => ({
-					sourceDate: getDate(r),
-					rate:
-						r.correctionRate ??
-						(r.sessionsAnalyzed > 0
-							? r.correctionsFound / r.sessionsAnalyzed
-							: 0),
-					corrections: r.correctionsFound,
-					sessions: r.sessionsAnalyzed,
-				}));
-				ratesWithDates.sort((a, b) => a.sourceDate.localeCompare(b.sourceDate));
-
-				for (const r of ratesWithDates) {
-					const bar = "\u2588".repeat(Math.round(r.rate * 10));
-					const rateStr = r.rate.toFixed(2);
-					output.push(
-						`${r.sourceDate}  ${rateStr}  ${bar}  (${r.corrections}/${r.sessions} sessions)`,
-					);
-				}
-
-				if (ratesWithDates.length >= 3) {
-					const firstHalf = ratesWithDates.slice(
-						0,
-						Math.floor(ratesWithDates.length / 2),
-					);
-					const secondHalf = ratesWithDates.slice(
-						Math.floor(ratesWithDates.length / 2),
-					);
-					const avgFirst =
-						firstHalf.reduce((s, r) => s + r.rate, 0) / firstHalf.length;
-					const avgSecond =
-						secondHalf.reduce((s, r) => s + r.rate, 0) / secondHalf.length;
-					const delta = avgSecond - avgFirst;
-					const pct =
-						avgFirst > 0
-							? Math.abs((delta / avgFirst) * 100).toFixed(0)
-							: "N/A";
-
-					output.push("");
-					if (delta < -0.01) {
-						output.push(
-							`Trend: \u2193 improving (${pct}% fewer corrections per session)`,
-						);
-					} else if (delta > 0.01) {
-						output.push(
-							`Trend: \u2191 worsening (${pct}% more corrections per session)`,
-						);
-					} else {
-						output.push(`Trend: \u2194 flat`);
-					}
-				}
-
-				output.push("");
-				output.push("### Rule Recidivism (sections edited multiple times)");
-				output.push("");
-
-				const sectionCounts = new Map<
-					string,
-					{
-						count: number;
-						types: string[];
-						reasons: string[];
-						dates: string[];
-					}
-				>();
-
-				for (const run of runs) {
-					if (!run.edits) continue;
-					for (const edit of run.edits) {
-						const key = edit.section.toLowerCase().trim();
-						const existing = sectionCounts.get(key) ?? {
-							count: 0,
-							types: [],
-							reasons: [],
-							dates: [],
-						};
-						existing.count++;
-						existing.types.push(edit.type);
-						existing.reasons.push(edit.reason);
-						existing.dates.push(getDate(run));
-						sectionCounts.set(key, existing);
-					}
-				}
-
-				if (sectionCounts.size === 0) {
-					output.push(
-						"No per-edit data yet. Run /reflect to start collecting.",
-					);
-				} else {
-					const sorted = [...sectionCounts.entries()].sort(
-						(a, b) => b[1].count - a[1].count,
-					);
-					const recidivists = sorted.filter(([, v]) => v.count >= 2);
-					const resolved = sorted.filter(([, v]) => v.count === 1);
-
-					if (recidivists.length > 0) {
-						output.push("**Recurring (not sticking):**");
-						for (const [section, data] of recidivists) {
-							const strengthened = data.types.filter(
-								(t) => t === "strengthen",
-							).length;
-							const added = data.types.filter((t) => t === "add").length;
-							const dateRange = `${data.dates[0]} \u2192 ${data.dates[data.dates.length - 1]}`;
-							output.push(
-								`- **${section}** \u00d7${data.count} (${strengthened} strengthen, ${added} add) [${dateRange}]`,
-							);
-							const lastReason = data.reasons[data.reasons.length - 1];
-							if (lastReason) {
-								output.push(
-									`  Last: ${lastReason.length > 120 ? lastReason.slice(0, 120) + "..." : lastReason}`,
-								);
-							}
-						}
-					} else {
-						output.push(
-							"**No recurring violations.** All rules stuck after first edit.",
-						);
-					}
-
-					if (resolved.length > 0) {
-						output.push("");
-						output.push(
-							`**Resolved (edited once, not repeated):** ${resolved.length} rule(s)`,
-						);
-						for (const [section] of resolved.slice(0, 5)) {
-							output.push(`- ${section}`);
-						}
-						if (resolved.length > 5) {
-							output.push(`  ...and ${resolved.length - 5} more`);
-						}
-					}
-				}
-
+				output.push(...formatTargetStats(statsResult.value));
 				targetIdx++;
 			}
 
@@ -463,7 +528,7 @@ export function registerStatsCommand(pi: ExtensionAPI) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(text, "info");
 			} else {
-				console.log(text);
+				headlessNotify(text, "info");
 			}
 		},
 	});
@@ -480,7 +545,7 @@ export function registerBackfillCommand(
 			const modelRegistryRef = getModelRegistry();
 
 			if (!ctx.hasUI) {
-				console.error("reflect-backfill requires interactive mode.");
+				headlessNotify("reflect-backfill requires interactive mode.", "error");
 				return;
 			}
 
@@ -505,7 +570,15 @@ export function registerBackfillCommand(
 				return;
 			}
 
-			const allDates = getAvailableSessionDates();
+			const datesResult = await getAvailableSessionDates();
+			if (datesResult.isErr()) {
+				ctx.ui.notify(
+					`Failed to get available dates: ${datesResult.error.message}`,
+					"error",
+				);
+				return;
+			}
+			const allDates = datesResult.value;
 			if (allDates.length === 0) {
 				ctx.ui.notify("No session files found.", "info");
 				return;
@@ -525,7 +598,9 @@ export function registerBackfillCommand(
 						)
 						.filter((d): d is string => typeof d === "string"),
 				);
-				const missingDates = allDates.filter((d) => !coveredDates.has(d));
+				const missingDates = allDates.filter(
+					(d: string) => !coveredDates.has(d),
+				);
 				if (missingDates.length > 0) {
 					plan.push({ target, dates: missingDates });
 				}
@@ -611,8 +686,9 @@ export function registerBackfillCommand(
 					);
 
 					if (
-						!transcriptResult.transcripts ||
-						transcriptResult.includedCount === 0
+						transcriptResult.isErr() ||
+						!transcriptResult.value.transcripts ||
+						transcriptResult.value.includedCount === 0
 					) {
 						ctx.ui.notify(
 							`  ${date}: no substantive sessions, skipping`,
@@ -633,7 +709,7 @@ export function registerBackfillCommand(
 						undefined,
 						{
 							sourceDateOverride: date,
-							transcriptsOverride: transcriptResult,
+							transcriptsOverride: transcriptResult.value,
 							dryRun: true,
 						},
 					);

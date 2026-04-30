@@ -12,7 +12,10 @@ function countLineOccurrences(lines: readonly string[], text: string): number {
 	return lines.reduce((n, line) => n + (line === text ? 1 : 0), 0);
 }
 
-export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
+export function applyEdits(
+	content: string,
+	edits: readonly AnalysisEdit[],
+): EditResult {
 	let result = content;
 	let applied = 0;
 	const skipped: string[] = [];

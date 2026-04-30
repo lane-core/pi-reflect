@@ -15,36 +15,12 @@ export class FileError extends Error {
 	}
 }
 
-/**
- * The following error classes are not yet wired into the control flow.
- * They are scaffolding for the neverthrow Result<T,E> propagation that
- * will replace the ad-hoc `notify(..., "error"); return null` pattern in
- * src/reflect.ts once runReflection is fully decomposed into phases.
- *
- * TODO: Adopt these (or refined variants) after the monolithic refactor
- * reveals the actual error boundaries between preflight, transcript
- * collection, model resolution, analysis, and edit application.
- */
-
-export class ValidationError extends Error {
+export class ReflectionError extends Error {
 	constructor(
 		message: string,
-		public readonly cause: unknown,
+		public readonly level: "error" | "warning" = "error",
+		public readonly cause?: unknown,
 	) {
-		super(message);
-		this.name = "ValidationError";
-	}
-}
-
-export class LLMError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "LLMError";
-	}
-}
-
-export class ReflectionError extends Error {
-	constructor(message: string) {
 		super(message);
 		this.name = "ReflectionError";
 	}
@@ -56,3 +32,90 @@ export class ConfigError extends Error {
 		this.name = "ConfigError";
 	}
 }
+
+/* ------------------------------------------------------------------ */
+/* Error types for previously-silent catch blocks                     */
+/* ------------------------------------------------------------------ */
+
+export class SessionReadError extends FileError {
+	constructor(
+		message: string,
+		path: string,
+		public readonly cause?: unknown,
+	) {
+		super(message, path);
+		this.name = "SessionReadError";
+	}
+}
+
+export class DirectoryScanError extends Error {
+	constructor(
+		message: string,
+		public readonly dir: string,
+		public readonly cause?: unknown,
+	) {
+		super(message);
+		this.name = "DirectoryScanError";
+	}
+}
+
+export class FileAccessError extends FileError {
+	constructor(
+		message: string,
+		path: string,
+		public readonly cause?: unknown,
+	) {
+		super(message, path);
+		this.name = "FileAccessError";
+	}
+}
+
+export class GitCommitError extends Error {
+	constructor(
+		message: string,
+		public readonly repoDir: string,
+		public readonly cause?: unknown,
+	) {
+		super(message);
+		this.name = "GitCommitError";
+	}
+}
+
+export class BackupCleanupError extends FileError {
+	constructor(
+		message: string,
+		path: string,
+		public readonly cause?: unknown,
+	) {
+		super(message, path);
+		this.name = "BackupCleanupError";
+	}
+}
+
+export class CommandError extends Error {
+	constructor(
+		message: string,
+		public readonly command: string,
+		public readonly cause?: unknown,
+	) {
+		super(message);
+		this.name = "CommandError";
+	}
+}
+
+export class NetworkError extends Error {
+	constructor(
+		message: string,
+		public readonly url: string,
+		public readonly cause?: unknown,
+	) {
+		super(message);
+		this.name = "NetworkError";
+	}
+}
+
+export type ContextError =
+	| DirectoryScanError
+	| FileAccessError
+	| CommandError
+	| NetworkError;

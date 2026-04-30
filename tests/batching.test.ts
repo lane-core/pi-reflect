@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { ok } from "neverthrow";
 import { DEFAULT_TARGET } from "../src/config.js";
 import { buildTranscriptBatches, runReflection } from "../src/reflect.js";
 import type {
@@ -139,11 +140,12 @@ function makeModelRegistry() {
 	};
 }
 
-function makeToolCallResponse(analysis: any) {
+function makeToolCallResponse(analysis: unknown) {
 	return {
+		stopReason: "stop" as const,
 		content: [
 			{
-				type: "toolCall",
+				type: "toolCall" as const,
 				name: "submit_analysis",
 				arguments: analysis,
 			},
@@ -153,7 +155,8 @@ function makeToolCallResponse(analysis: any) {
 
 function makeTextResponse(text: string) {
 	return {
-		content: [{ type: "text", text }],
+		stopReason: "stop" as const,
+		content: [{ type: "text" as const, text }],
 	};
 }
 
@@ -195,7 +198,7 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 					summary: "Added DRY emphasis.",
 				}),
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: "### Session\n\n**USER:** test\n",
 				sessionCount: 1,
 				includedCount: 1,
@@ -238,7 +241,7 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 		const deps: RunReflectionDeps = {
 			completeSimple: async () => makeTextResponse(jsonResponse),
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: "### Session\n\n**USER:** test\n",
 				sessionCount: 1,
 				includedCount: 1,
@@ -267,7 +270,7 @@ describe("analyzeTranscriptBatch — tool call parsing", () => {
 				content: [],
 			}),
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: "### Session\n\n**USER:** test\n",
 				sessionCount: 1,
 				includedCount: 1,
@@ -339,7 +342,7 @@ describe("batched runReflection", () => {
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
@@ -410,7 +413,7 @@ describe("batched runReflection", () => {
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
@@ -477,7 +480,7 @@ describe("batched runReflection", () => {
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
@@ -514,7 +517,7 @@ describe("batched runReflection", () => {
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
@@ -570,7 +573,7 @@ describe("batched runReflection", () => {
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,
@@ -604,7 +607,7 @@ describe("batched runReflection", () => {
 					summary: "All clean.",
 				}),
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: "### Session\n\n**USER:** test\n",
 				sessionCount: 2,
 				includedCount: 2,
@@ -647,7 +650,7 @@ describe("batched runReflection", () => {
 				});
 			},
 			getModel: () => ({ provider: "test", id: "test-model" }),
-			collectTranscriptsFn: async () => ({
+			collectTranscriptsFn: async () => ok({
 				transcripts: sessions.map((s) => s.transcript).join("\n---\n\n"),
 				sessionCount: sessions.length,
 				includedCount: sessions.length,

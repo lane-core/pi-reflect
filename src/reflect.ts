@@ -1,5 +1,6 @@
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { err, ok, type Result } from "neverthrow";
 import { applyEdits } from "./apply.js";
 import {
 	computeFileMetrics,
@@ -7,6 +8,11 @@ import {
 	formatTimestamp,
 	resolvePath,
 } from "./config.js";
+import {
+	BackupCleanupError,
+	GitCommitError,
+	ReflectionError,
+} from "./errors.js";
 import {
 	collectContext,
 	collectTranscripts,
@@ -17,6 +23,7 @@ import { AnalysisResponseSchema } from "./schemas.js";
 import type {
 	AnalysisEdit,
 	AnalysisResult,
+	CompleteFn,
 	NotifyFn,
 	ReflectionOptions,
 	ReflectRun,
@@ -29,7 +36,7 @@ const REFLECTION_TOOL_SCHEMA = {
 	name: "submit_analysis",
 	description: "Submit the reflection analysis results",
 	parameters: {
-		type: "object" as const,
+		type: "object",
 		properties: {
 			corrections_found: {
 				type: "number",
@@ -105,12 +112,12 @@ const REFLECTION_TOOL_SCHEMA = {
 			"summary",
 		],
 	},
-};
+} as const;
 
 const ENTRY_SEPARATOR = "\n---\n\n";
 
 export function buildTranscriptBatches(
-	sessions: SessionData[],
+	sessions: readonly SessionData[],
 	maxBytes: number,
 ): string[][] {
 	const batches: string[][] = [];
@@ -134,7 +141,7 @@ export function buildTranscriptBatches(
 }
 
 export function formatBatchTranscripts(
-	parts: string[],
+	parts: readonly string[],
 	batchIndex: number,
 	totalBatches: number,
 	totalSessions: number,
@@ -151,11 +158,11 @@ export async function analyzeTranscriptBatch(
 	targetContent: string,
 	transcripts: string,
 	context: string,
-	model: any,
+	model: unknown,
 	apiKey: string,
-	notify: NotifyFn,
-	completeFn: (model: any, request: any, options: any) => Promise<any>,
-): Promise<AnalysisResult | null> {
+	_notify: NotifyFn,
+	completeFn: CompleteFn,
+): Promise<Result<AnalysisResult, ReflectionError>> {
 	const prompt = buildPromptForTarget(
 		target,
 		targetPath,
@@ -164,40 +171,47 @@ export async function analyzeTranscriptBatch(
 		context,
 	);
 
-	const response = await completeFn(
-		model,
-		{
-			systemPrompt:
-				"You are a behavioral analysis tool that prioritizes CONCISENESS. Your goal is to keep the target file short and scannable — prefer merging, removing, and tightening rules over adding new ones. The file should get shorter or stay the same size, not grow. Analyze the session transcripts and call the submit_analysis tool with your results. Always call the tool — never respond with plain text.",
-			messages: [
-				{
-					role: "user" as const,
-					content: [{ type: "text" as const, text: prompt }],
-					timestamp: Date.now(),
-				},
-			],
-			tools: [REFLECTION_TOOL_SCHEMA],
-		},
-		{ apiKey, maxTokens: 16384 },
-	);
+	let response;
+	try {
+		response = await completeFn(
+			model,
+			{
+				systemPrompt:
+					"You are a behavioral analysis tool that prioritizes CONCISENESS. Your goal is to keep the target file short and scannable — prefer merging, removing, and tightening rules over adding new ones. The file should get shorter or stay the same size, not grow. Analyze the session transcripts and call the submit_analysis tool with your results. Always call the tool — never respond with plain text.",
+				messages: [
+					{
+						role: "user" as const,
+						content: [{ type: "text" as const, text: prompt }],
+						timestamp: Date.now(),
+					},
+				],
+				tools: [REFLECTION_TOOL_SCHEMA],
+			},
+			{ apiKey, maxTokens: 16384 },
+		);
+	} catch (e) {
+		return err(new ReflectionError(`LLM request failed: ${e}`));
+	}
 
 	if (response.stopReason === "error") {
-		notify(`LLM error: ${response.errorMessage ?? "unknown"}`, "error");
-		return null;
+		return err(
+			new ReflectionError(`LLM error: ${response.errorMessage ?? "unknown"}`),
+		);
 	}
 
 	let rawAnalysis: unknown;
 	const toolCall = response.content.find(
-		(c: unknown) =>
-			(c as Record<string, unknown>).type === "toolCall" &&
-			(c as Record<string, unknown>).name === "submit_analysis",
+		(c): c is import("./types.js").LLMToolCallContent =>
+			c.type === "toolCall" && c.name === "submit_analysis",
 	);
-	if (toolCall && (toolCall as Record<string, unknown>).arguments) {
-		rawAnalysis = (toolCall as Record<string, unknown>).arguments;
+	if (toolCall && toolCall.arguments) {
+		rawAnalysis = toolCall.arguments;
 	} else {
 		const responseText = response.content
-			.filter((c: unknown) => (c as Record<string, unknown>).type === "text")
-			.map((c: unknown) => (c as Record<string, unknown>).text as string)
+			.filter(
+				(c): c is import("./types.js").LLMTextContent => c.type === "text",
+			)
+			.map((c) => c.text)
 			.join("")
 			.trim();
 		try {
@@ -205,31 +219,36 @@ export async function analyzeTranscriptBatch(
 				.replace(/^```json?\s*\n?/m, "")
 				.replace(/\n?```\s*$/m, "");
 			rawAnalysis = JSON.parse(jsonStr);
-		} catch {
-			notify(
-				`Failed to parse LLM response as JSON. Raw response:\n${responseText.slice(0, 500)}`,
-				"error",
+		} catch (e) {
+			return err(
+				new ReflectionError(
+					`Failed to parse LLM response as JSON. Raw response:\n${responseText.slice(0, 500)}`,
+					"error",
+					e,
+				),
 			);
-			return null;
 		}
 	}
 
 	const parsed = AnalysisResponseSchema.safeParse(rawAnalysis);
 	if (!parsed.success) {
-		notify(`LLM returned invalid structure: ${parsed.error.message}`, "error");
-		return null;
+		return err(
+			new ReflectionError(
+				`LLM returned invalid structure: ${parsed.error.message}`,
+			),
+		);
 	}
 
-	return {
+	return ok({
 		edits: parsed.data.edits,
 		correctionsFound: parsed.data.corrections_found,
 		sessionsWithCorrections: parsed.data.sessions_with_corrections,
 		summary: parsed.data.summary,
 		patternsNotAdded: parsed.data.patterns_not_added,
-	};
+	});
 }
 
-function toEditRecords(edits: AnalysisEdit[]) {
+function toEditRecords(edits: readonly AnalysisEdit[]) {
 	return edits
 		.filter(
 			(e): e is AnalysisEdit & { section: string; reason: string } =>
@@ -244,30 +263,32 @@ function toEditRecords(edits: AnalysisEdit[]) {
 
 async function loadTarget(
 	targetPath: string,
-	notify: NotifyFn,
-): Promise<{ path: string; content: string } | null> {
-	if (!fs.existsSync(targetPath)) {
-		notify(`Target file not found: ${targetPath}`, "error");
-		return null;
-	}
-
-	const content = fs.readFileSync(targetPath, "utf-8");
-	if (content.length < 100) {
-		notify(
-			`Target file too small (${content.length} bytes): ${targetPath}`,
-			"error",
+): Promise<Result<{ path: string; content: string }, ReflectionError>> {
+	let content: string;
+	try {
+		content = await fs.readFile(targetPath, "utf-8");
+	} catch (e) {
+		return err(
+			new ReflectionError(`Target file not found: ${targetPath}`, "error", e),
 		);
-		return null;
 	}
 
-	return { path: targetPath, content };
+	if (content.length < 100) {
+		return err(
+			new ReflectionError(
+				`Target file too small (${content.length} bytes): ${targetPath}`,
+			),
+		);
+	}
+
+	return ok({ path: targetPath, content });
 }
 
 interface TranscriptCollection {
 	transcripts: string;
 	sessionCount: number;
 	includedCount: number;
-	allSessions?: SessionData[];
+	allSessions?: readonly SessionData[];
 }
 
 async function collectReflectionTranscripts(
@@ -275,11 +296,11 @@ async function collectReflectionTranscripts(
 	options: ReflectionOptions | undefined,
 	deps: RunReflectionDeps | undefined,
 	notify: NotifyFn,
-): Promise<TranscriptCollection | null> {
+): Promise<Result<TranscriptCollection, ReflectionError>> {
 	let transcripts: string;
 	let sessionCount = 0;
 	let includedCount = 0;
-	let allSessions: SessionData[] | undefined;
+	let allSessions: readonly SessionData[] | undefined;
 
 	if (options?.transcriptsOverride) {
 		({ transcripts, sessionCount, includedCount } =
@@ -290,7 +311,18 @@ async function collectReflectionTranscripts(
 			`Extracting transcripts from ${target.transcripts.length} source(s) (last ${target.lookbackDays} day(s))...`,
 			"info",
 		);
-		transcripts = await collectContext(target.transcripts, target.lookbackDays);
+		const ctxResult = await collectContext(
+			target.transcripts,
+			target.lookbackDays,
+		);
+		if (ctxResult.isErr()) {
+			return err(
+				new ReflectionError(
+					`Failed to collect transcripts: ${ctxResult.error.message}`,
+				),
+			);
+		}
+		transcripts = ctxResult.value;
 		const headerMatches = transcripts.match(/^###\s/gm);
 		sessionCount = headerMatches?.length ?? 1;
 		includedCount = sessionCount;
@@ -309,8 +341,15 @@ async function collectReflectionTranscripts(
 			target.lookbackDays,
 			target.maxSessionBytes,
 		);
-		({ transcripts, sessionCount, includedCount } = result);
-		allSessions = result.sessions;
+		if (result.isErr()) {
+			return err(
+				new ReflectionError(
+					`Failed to collect transcripts from command: ${result.error.message}`,
+				),
+			);
+		}
+		({ transcripts, sessionCount, includedCount } = result.value);
+		allSessions = result.value.sessions;
 	} else {
 		notify(
 			`Extracting transcripts (last ${target.lookbackDays} day(s))...`,
@@ -318,16 +357,23 @@ async function collectReflectionTranscripts(
 		);
 		const fn = deps?.collectTranscriptsFn ?? collectTranscripts;
 		const result = await fn(target.lookbackDays, target.maxSessionBytes);
-		({ transcripts, sessionCount, includedCount } = result);
-		allSessions = result.sessions;
+		if (result.isErr()) {
+			return err(
+				new ReflectionError(
+					`Failed to collect transcripts: ${result.error.message}`,
+				),
+			);
+		}
+		({ transcripts, sessionCount, includedCount } = result.value);
+		allSessions = result.value.sessions;
 	}
 
 	if (!transcripts || includedCount === 0) {
-		notify(
-			`No substantive sessions found (${sessionCount} scanned). Nothing to reflect on.`,
-			"info",
+		return err(
+			new ReflectionError(
+				`No substantive sessions found (${sessionCount} scanned). Nothing to reflect on.`,
+			),
 		);
-		return null;
 	}
 
 	const totalSessionCount = allSessions ? allSessions.length : includedCount;
@@ -339,7 +385,7 @@ async function collectReflectionTranscripts(
 		"info",
 	);
 
-	return { transcripts, sessionCount, includedCount, allSessions };
+	return ok({ transcripts, sessionCount, includedCount, allSessions });
 }
 
 interface ResolvedModel {
@@ -353,15 +399,14 @@ async function resolveReflectionModel(
 	modelRegistry: unknown,
 	options: ReflectionOptions | undefined,
 	deps: RunReflectionDeps | undefined,
-	notify: NotifyFn,
-): Promise<ResolvedModel | null> {
+): Promise<Result<ResolvedModel, ReflectionError>> {
 	if (options?.currentModel && options?.currentModelApiKey) {
 		const model = options.currentModel as { provider: string; id: string };
-		return {
+		return ok({
 			model: options.currentModel,
 			apiKey: options.currentModelApiKey,
 			modelLabel: `${model.provider}/${model.id}`,
-		};
+		});
 	}
 
 	const getModelFn =
@@ -375,19 +420,17 @@ async function resolveReflectionModel(
 		)?.find?.(provider, modelId);
 	}
 	if (!model) {
-		notify(`Model not found: ${target.model}`, "error");
-		return null;
+		return err(new ReflectionError(`Model not found: ${target.model}`));
 	}
 
 	const apiKey = await (
 		modelRegistry as { getApiKey?: (m: unknown) => Promise<string | null> }
 	)?.getApiKey?.(model);
 	if (!apiKey) {
-		notify(`No API key for model: ${target.model}`, "error");
-		return null;
+		return err(new ReflectionError(`No API key for model: ${target.model}`));
 	}
 
-	return { model, apiKey, modelLabel: target.model };
+	return ok({ model, apiKey, modelLabel: target.model });
 }
 
 async function collectReflectionContext(
@@ -400,7 +443,12 @@ async function collectReflectionContext(
 		`Collecting context from ${target.context.length} source(s)...`,
 		"info",
 	);
-	const context = await collectContext(target.context, target.lookbackDays);
+	const ctxResult = await collectContext(target.context, target.lookbackDays);
+	if (ctxResult.isErr()) {
+		notify(`Context collection failed: ${ctxResult.error.message}`, "warning");
+		return "";
+	}
+	const context = ctxResult.value;
 	if (context) {
 		notify(
 			`Collected ${(context.length / 1024).toFixed(0)}KB of additional context`,
@@ -435,13 +483,13 @@ async function runAnalysisLoop(
 	apiKey: string,
 	modelLabel: string,
 	notify: NotifyFn,
-	completeFn: (model: any, request: any, options: any) => Promise<any>,
-	allSessions: SessionData[] | undefined,
+	completeFn: CompleteFn,
+	allSessions: readonly SessionData[] | undefined,
 	transcripts: string,
 	totalSessionCount: number,
 	batchBudget: number,
 	needsBatching: boolean | undefined,
-): Promise<AnalysisLoopResult | null> {
+): Promise<Result<AnalysisLoopResult, ReflectionError>> {
 	const allEdits: AnalysisEdit[] = [];
 	let totalCorrectionsFound = 0;
 	const allSummaries: string[] = [];
@@ -461,7 +509,7 @@ async function runAnalysisLoop(
 				totalSessionCount,
 			);
 			const currentContent =
-				i === 0 ? targetContent : fs.readFileSync(targetPath, "utf-8");
+				i === 0 ? targetContent : await fs.readFile(targetPath, "utf-8");
 			notify(
 				`Analyzing batch ${i + 1}/${batches.length} (${batches[i].length} sessions, ${(batchTranscripts.length / 1024).toFixed(0)}KB) with ${modelLabel}...`,
 				"info",
@@ -479,29 +527,33 @@ async function runAnalysisLoop(
 				completeFn,
 			);
 
-			if (!result) continue;
+			if (result.isErr()) {
+				notify(result.error.message, result.error.level);
+				continue;
+			}
+			const r = result.value;
 
-			allEdits.push(...result.edits);
-			totalCorrectionsFound += result.correctionsFound;
-			if (result.summary) allSummaries.push(result.summary);
+			allEdits.push(...r.edits);
+			totalCorrectionsFound += r.correctionsFound;
+			if (r.summary) allSummaries.push(r.summary);
 
-			if (result.edits.length > 0) {
-				const currentForApply = fs.readFileSync(targetPath, "utf-8");
+			if (r.edits.length > 0) {
+				const currentForApply = await fs.readFile(targetPath, "utf-8");
 				const { result: updated, applied } = applyEdits(
 					currentForApply,
-					result.edits,
+					r.edits,
 				);
 				if (applied > 0) {
 					if (i === 0) {
 						const bkDir = resolvePath(target.backupDir || DEFAULT_BACKUP_DIR);
-						fs.mkdirSync(bkDir, { recursive: true });
+						await fs.mkdir(bkDir, { recursive: true });
 						const bkPath = path.join(
 							bkDir,
 							`${path.basename(targetPath, ".md")}_${formatTimestamp()}.md`,
 						);
-						fs.copyFileSync(targetPath, bkPath);
+						await fs.copyFile(targetPath, bkPath);
 					}
-					fs.writeFileSync(targetPath, updated, "utf-8");
+					await fs.writeFile(targetPath, updated, "utf-8");
 					notify(`Batch ${i + 1}: applied ${applied} edit(s)`, "info");
 				}
 			}
@@ -519,17 +571,18 @@ async function runAnalysisLoop(
 			notify,
 			completeFn,
 		);
-		if (!result) return null;
-		allEdits.push(...result.edits);
-		totalCorrectionsFound += result.correctionsFound;
-		if (result.summary) allSummaries.push(result.summary);
+		if (result.isErr()) return err(result.error);
+		const r = result.value;
+		allEdits.push(...r.edits);
+		totalCorrectionsFound += r.correctionsFound;
+		if (r.summary) allSummaries.push(r.summary);
 	}
 
-	return {
+	return ok({
 		edits: allEdits,
 		correctionsFound: totalCorrectionsFound,
 		summaries: allSummaries,
-	};
+	});
 }
 
 interface EditApplicationResult {
@@ -539,43 +592,53 @@ interface EditApplicationResult {
 	backupPath: string;
 }
 
-function applyEditsWithBackup(
+async function applyEditsWithBackup(
 	targetPath: string,
 	targetContent: string,
 	edits: AnalysisEdit[],
 	backupDir: string,
-	notify: NotifyFn,
-): EditApplicationResult | null {
-	fs.mkdirSync(backupDir, { recursive: true });
+): Promise<
+	Result<EditApplicationResult, ReflectionError | BackupCleanupError>
+> {
+	await fs.mkdir(backupDir, { recursive: true });
 	const backupPath = path.join(
 		backupDir,
 		`${path.basename(targetPath, ".md")}_${formatTimestamp()}.md`,
 	);
-	fs.copyFileSync(targetPath, backupPath);
+	await fs.copyFile(targetPath, backupPath);
 
 	const { result, applied, skipped } = applyEdits(targetContent, edits);
 
 	if (applied === 0) {
-		notify(
-			`All ${edits.length} edits failed to apply. Skipped: ${skipped.join("; ")}`,
-			"warning",
-		);
 		try {
-			fs.unlinkSync(backupPath);
-		} catch {}
-		return null;
+			await fs.unlink(backupPath);
+		} catch (e) {
+			return err(
+				new BackupCleanupError(
+					`Failed to clean up backup after failed edits: ${backupPath}`,
+					backupPath,
+					e,
+				),
+			);
+		}
+		return err(
+			new ReflectionError(
+				`All ${edits.length} edits failed to apply. Skipped: ${skipped.join("; ")}`,
+				"warning",
+			),
+		);
 	}
 
 	if (result.length < targetContent.length * 0.5) {
-		notify(
-			`Result is suspiciously small (${result.length} vs ${targetContent.length} bytes). Aborting.`,
-			"error",
+		return err(
+			new ReflectionError(
+				`Result is suspiciously small (${result.length} vs ${targetContent.length} bytes). Aborting.`,
+			),
 		);
-		return null;
 	}
 
-	fs.writeFileSync(targetPath, result, "utf-8");
-	return { result, applied, skipped, backupPath };
+	await fs.writeFile(targetPath, result, "utf-8");
+	return ok({ result, applied, skipped, backupPath });
 }
 
 function computeDiffLines(original: string, final: string): number {
@@ -593,31 +656,39 @@ async function gitCommitReflection(
 	targetPath: string,
 	totalApplied: number,
 	totalSessionCount: number,
-	notify: NotifyFn,
-): Promise<void> {
+	_notify: NotifyFn,
+): Promise<Result<void, GitCommitError>> {
+	let repoDir: string;
 	try {
-		const realPath = fs.realpathSync(targetPath);
-		const repoDir = path.dirname(realPath);
-		if (fs.existsSync(path.join(repoDir, ".git"))) {
-			const { execFileSync } = await import("node:child_process");
-			execFileSync("git", ["add", "-A"], {
-				cwd: repoDir,
-				stdio: "ignore",
-				timeout: 5000,
-			});
-			execFileSync(
-				"git",
-				[
-					"commit",
-					"-m",
-					`reflect: ${path.basename(realPath)} — ${totalApplied} edits from ${totalSessionCount} sessions`,
-					"--no-verify",
-				],
-				{ cwd: repoDir, stdio: "ignore", timeout: 5000 },
-			);
-			notify(`Committed to ${path.basename(repoDir)}`, "info");
-		}
-	} catch {}
+		const realPath = await fs.realpath(targetPath);
+		repoDir = path.dirname(realPath);
+		await fs.access(path.join(repoDir, ".git"));
+	} catch {
+		return ok(void 0);
+	}
+	try {
+		const { execFileSync } = await import("node:child_process");
+		execFileSync("git", ["add", "-A"], {
+			cwd: repoDir,
+			stdio: "ignore",
+			timeout: 5000,
+		});
+		execFileSync(
+			"git",
+			[
+				"commit",
+				"-m",
+				`reflect: ${path.basename(repoDir)} — ${totalApplied} edits from ${totalSessionCount} sessions`,
+				"--no-verify",
+			],
+			{ cwd: repoDir, stdio: "ignore", timeout: 5000 },
+		);
+		return ok(void 0);
+	} catch (e) {
+		return err(
+			new GitCommitError(`Git commit failed in ${repoDir}`, repoDir, e),
+		);
+	}
 }
 
 export async function runReflection(
@@ -629,9 +700,12 @@ export async function runReflection(
 ): Promise<ReflectRun | null> {
 	const targetPath = resolvePath(target.path);
 
-	const preflight = await loadTarget(targetPath, notify);
-	if (!preflight) return null;
-	const { content: targetContent } = preflight;
+	const preflight = await loadTarget(targetPath);
+	if (preflight.isErr()) {
+		notify(preflight.error.message, preflight.error.level);
+		return null;
+	}
+	const { content: targetContent } = preflight.value;
 
 	const txResult = await collectReflectionTranscripts(
 		target,
@@ -639,8 +713,11 @@ export async function runReflection(
 		deps,
 		notify,
 	);
-	if (!txResult) return null;
-	const { transcripts, includedCount, allSessions } = txResult;
+	if (txResult.isErr()) {
+		notify(txResult.error.message, "info");
+		return null;
+	}
+	const { transcripts, includedCount, allSessions } = txResult.value;
 
 	const totalSessionCount = allSessions ? allSessions.length : includedCount;
 	const totalBytes = allSessions
@@ -652,16 +729,18 @@ export async function runReflection(
 		modelRegistry,
 		options,
 		deps,
-		notify,
 	);
-	if (!modelResult) return null;
-	const { model, apiKey, modelLabel } = modelResult;
+	if (modelResult.isErr()) {
+		notify(modelResult.error.message, modelResult.error.level);
+		return null;
+	}
+	const { model, apiKey, modelLabel } = modelResult.value;
 
 	const context = await collectReflectionContext(target, notify);
 
-	const completeFn =
+	const completeFn: CompleteFn =
 		deps?.completeSimple ??
-		(await import("@mariozechner/pi-ai")).completeSimple;
+		((await import("@mariozechner/pi-ai")).completeSimple as CompleteFn);
 
 	const overhead = targetContent.length + (context?.length ?? 0) + 20_000;
 	const batchBudget = Math.max(target.maxSessionBytes - overhead, 100_000);
@@ -684,8 +763,11 @@ export async function runReflection(
 		batchBudget,
 		needsBatching,
 	);
-	if (!analysis) return null;
-	const { edits, correctionsFound, summaries } = analysis;
+	if (analysis.isErr()) {
+		notify(analysis.error.message, analysis.error.level);
+		return null;
+	}
+	const { edits, correctionsFound, summaries } = analysis.value;
 
 	const correctionRate =
 		totalSessionCount > 0 ? correctionsFound / totalSessionCount : 0;
@@ -707,7 +789,7 @@ export async function runReflection(
 			correctionRate,
 			edits: [],
 			sourceDate: sourceDateStr,
-			fileSize: computeFileMetrics(fs.readFileSync(targetPath, "utf-8")),
+			fileSize: computeFileMetrics(await fs.readFile(targetPath, "utf-8")),
 		};
 	}
 
@@ -725,7 +807,7 @@ export async function runReflection(
 			correctionRate,
 			edits: editRecords,
 			sourceDate: sourceDateStr,
-			fileSize: computeFileMetrics(fs.readFileSync(targetPath, "utf-8")),
+			fileSize: computeFileMetrics(await fs.readFile(targetPath, "utf-8")),
 		};
 	}
 
@@ -735,38 +817,44 @@ export async function runReflection(
 	if (needsBatching) {
 		totalApplied = edits.length;
 	} else {
-		const applied = applyEditsWithBackup(
+		const applied = await applyEditsWithBackup(
 			targetPath,
 			targetContent,
 			edits,
 			backupDir,
-			notify,
 		);
-		if (!applied) return null;
-		totalApplied = applied.applied;
-		if (applied.skipped.length > 0) {
+		if (applied.isErr()) {
+			const level = "level" in applied.error ? applied.error.level : "error";
+			notify(applied.error.message, level);
+			return null;
+		}
+		totalApplied = applied.value.applied;
+		if (applied.value.skipped.length > 0) {
 			notify(
-				`Applied ${applied.applied}/${edits.length} edits (${applied.skipped.length} skipped). Backup: ${applied.backupPath}`,
+				`Applied ${applied.value.applied}/${edits.length} edits (${applied.value.skipped.length} skipped). Backup: ${applied.value.backupPath}`,
 				"warning",
 			);
 		} else {
 			notify(
-				`Applied ${applied.applied} edit(s). Backup: ${applied.backupPath}`,
+				`Applied ${applied.value.applied} edit(s). Backup: ${applied.value.backupPath}`,
 				"info",
 			);
 		}
 	}
 
-	const finalContent = fs.readFileSync(targetPath, "utf-8");
+	const finalContent = await fs.readFile(targetPath, "utf-8");
 	const diffLines = computeDiffLines(targetContent, finalContent);
 
 	notify(combinedSummary, "info");
-	await gitCommitReflection(
+	const commitResult = await gitCommitReflection(
 		targetPath,
 		totalApplied,
 		totalSessionCount,
 		notify,
 	);
+	if (commitResult.isErr()) {
+		notify(commitResult.error.message, "warning");
+	}
 
 	const editRecords = toEditRecords(edits);
 

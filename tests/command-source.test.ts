@@ -9,9 +9,10 @@ describe("collectTranscriptsFromCommand", () => {
 			1,
 			1024 * 1024,
 		);
-		assert.ok(result.transcripts.includes("hello world"));
-		assert.equal(result.sessionCount, 1); // no ### Session: headers, defaults to 1
-		assert.equal(result.includedCount, 1);
+		assert.ok(result.isOk());
+		assert.ok(result.value.transcripts.includes("hello world"));
+		assert.equal(result.value.sessionCount, 1); // no ### Session: headers, defaults to 1
+		assert.equal(result.value.includedCount, 1);
 	});
 
 	it("interpolates {lookbackDays} in command", async () => {
@@ -20,7 +21,8 @@ describe("collectTranscriptsFromCommand", () => {
 			7,
 			1024 * 1024,
 		);
-		assert.ok(result.transcripts.includes("days=7"));
+		assert.ok(result.isOk());
+		assert.ok(result.value.transcripts.includes("days=7"));
 	});
 
 	it("interpolates multiple {lookbackDays} occurrences", async () => {
@@ -29,7 +31,8 @@ describe("collectTranscriptsFromCommand", () => {
 			3,
 			1024 * 1024,
 		);
-		assert.ok(result.transcripts.includes("3 and 3"));
+		assert.ok(result.isOk());
+		assert.ok(result.value.transcripts.includes("3 and 3"));
 	});
 
 	it("counts ### Session: headers for session count", async () => {
@@ -40,7 +43,8 @@ describe("collectTranscriptsFromCommand", () => {
 			1,
 			1024 * 1024,
 		);
-		assert.equal(result.sessionCount, 3);
+		assert.ok(result.isOk());
+		assert.equal(result.value.sessionCount, 3);
 	});
 
 	it("truncates output exceeding maxBytes", async () => {
@@ -51,31 +55,31 @@ describe("collectTranscriptsFromCommand", () => {
 			1,
 			500,
 		);
+		assert.ok(result.isOk());
 		assert.ok(
-			result.transcripts.length > 500,
-			`Expected > 500 bytes, got ${result.transcripts.length}`,
+			result.value.transcripts.length > 500,
+			`Expected > 500 bytes, got ${result.value.transcripts.length}`,
 		);
 		assert.ok(
-			result.transcripts.length < 800,
-			`Expected < 800 bytes (trimmed), got ${result.transcripts.length}`,
+			result.value.transcripts.length < 800,
+			`Expected < 800 bytes (trimmed), got ${result.value.transcripts.length}`,
 		);
-		assert.ok(result.transcripts.includes("[...truncated"));
+		assert.ok(result.value.transcripts.includes("[...truncated"));
 	});
 
-	it("returns empty on command failure", async () => {
+	it("returns error on command failure", async () => {
 		const result = await collectTranscriptsFromCommand("false", 1, 1024);
-		assert.equal(result.transcripts, "");
-		assert.equal(result.sessionCount, 0);
-		assert.equal(result.includedCount, 0);
+		assert.ok(result.isErr());
+		assert.equal(result.error.name, "CommandError");
 	});
 
-	it("returns empty on nonexistent command", async () => {
+	it("returns error on nonexistent command", async () => {
 		const result = await collectTranscriptsFromCommand(
 			"nonexistent_command_xyz_123",
 			1,
 			1024,
 		);
-		assert.equal(result.transcripts, "");
-		assert.equal(result.sessionCount, 0);
+		assert.ok(result.isErr());
+		assert.equal(result.error.name, "CommandError");
 	});
 });
